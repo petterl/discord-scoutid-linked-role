@@ -1,0 +1,36 @@
+#version: "3.8"
+
+services:
+  discord-scoutid-linked-role:
+    build: .
+    container_name: discord-scoutid-linked-role
+    ports:
+      - 3000:3000
+    environment:
+      - NODE_ENV=production
+    env_file:
+      - .env
+    restart: unless-stopped
+    networks:
+      - bridge-network
+
+  # Optional: Add a reverse proxy (ngrok)
+  ngrok:
+    image: ngrok/ngrok:latest
+    command:
+      - "http"
+      - "http://host.docker.internal:3000"
+      - "--url=${NGROK_URL}"
+    environment:
+      NGROK_AUTHTOKEN: ${NGROK_AUTHTOKEN}
+    ports:
+      - 4040:4040
+    depends_on:
+      - discord-scoutid-linked-role
+    restart: unless-stopped
+    networks:
+      - bridge-network
+
+networks:
+  bridge-network:
+    driver: bridge
