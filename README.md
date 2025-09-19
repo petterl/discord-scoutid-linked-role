@@ -104,6 +104,5 @@ Click **Save Changes** and restart your app.
 
 # TODO
 
-- [ ] Switch to database
 - [ ] pipeline for deployment
 - [ ] Set nickname to scoutid name

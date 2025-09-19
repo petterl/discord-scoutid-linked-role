@@ -11,6 +11,7 @@ const config = {
   DISCORD_CLIENT_ID: process.env.DISCORD_CLIENT_ID,
   DISCORD_CLIENT_SECRET: process.env.DISCORD_CLIENT_SECRET,
   DISCORD_REDIRECT_URI: process.env.DISCORD_REDIRECT_URI,
+  DISCORD_VALIDATION_URL: process.env.DISCORD_VALIDATION_URL,
 
   SCOUTID_CLIENT_ID: process.env.SCOUTID_CLIENT_ID,
   SCOUTID_CLIENT_SECRET: process.env.SCOUTID_CLIENT_SECRET,
@@ -19,6 +20,9 @@ const config = {
   SCOUTID_EVENT_ID: process.env.SCOUTID_EVENT_ID,
 
   COOKIE_SECRET: process.env.COOKIE_SECRET,
+  
+  // Redis configuration
+  REDIS_URL: process.env.REDIS_URL || 'redis://redis:6379',
 };
 
 export default config;
