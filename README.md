@@ -2,6 +2,13 @@
 
 This repository contains a linked role bot that will link your discord account to an scoutID account.
 
+## Bot functionality
+
+- When a user clicks the "Link your ScoutID" button in Discord, they will be redirected to authenticate with ScoutID.
+- After successful authentication, the bot will check if the user has the required roles (if specified).
+- If the user meets the criteria, the bot will assign them a specific role in the Discord server.
+- Optionally, the bot can also update the user's nickname in the server to match their ScoutID name.
+
 ## Project structure
 
 All of the files for the project are on the left-hand side. Here's a quick glimpse at the structure:
@@ -104,5 +111,4 @@ Click **Save Changes** and restart your app.
 
 # TODO
 
-- [ ] pipeline for deployment
-- [ ] Set nickname to scoutid name
+- Connect to scoutnet to check if user is in the event

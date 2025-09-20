@@ -156,3 +156,78 @@ export async function getMetadata(userId, tokens) {
     throw new Error(`Error getting discord metadata: [${response.status}] ${response.statusText}`);
   }
 }
+
+/**
+ * Get the guilds (servers) that the user is a member of.
+ * This is used to find which guilds we can update the user's nickname in.
+ */
+export async function getUserGuilds(tokens) {
+  const url = 'https://discord.com/api/v10/users/@me/guilds';
+  const response = await fetch(url, {
+    headers: {
+      Authorization: `Bearer ${tokens.access_token}`,
+    },
+  });
+  
+  if (response.ok) {
+    const data = await response.json();
+    return data;
+  } else {
+    throw new Error(`Error fetching user guilds: [${response.status}] ${response.statusText}`);
+  }
+}
+
+/**
+ * Update a user's nickname in a specific guild using the bot token.
+ * Requires the bot to have "Manage Nicknames" permission in the guild.
+ */
+export async function updateGuildMemberNickname(guildId, userId, nickname) {
+  const url = `https://discord.com/api/v10/guilds/${guildId}/members/${userId}`;
+  
+  const response = await fetch(url, {
+    method: 'PATCH',
+    headers: {
+      'Authorization': `Bot ${config.DISCORD_TOKEN}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      nick: nickname
+    })
+  });
+  
+  if (response.ok) {
+    console.log(`Successfully updated nickname for user ${userId} in guild ${guildId} to "${nickname}"`);
+    return true;
+  } else {
+    const errorText = await response.text();
+    console.error(`Error updating nickname in guild ${guildId}: [${response.status}] ${response.statusText} - ${errorText}`);
+    return false;
+  }
+}
+
+/**
+ * Check if the bot has permission to manage nicknames in a guild.
+ */
+export async function checkBotPermissions(guildId) {
+  const url = `https://discord.com/api/v10/guilds/${guildId}/members/@me`;
+  
+  const response = await fetch(url, {
+    headers: {
+      'Authorization': `Bot ${config.DISCORD_TOKEN}`,
+    },
+  });
+  
+  if (response.ok) {
+    const data = await response.json();
+    // Check if bot has MANAGE_NICKNAMES permission (0x8000000)
+    const hasManageNicknames = (data.permissions & 0x8000000) === 0x8000000;
+    return {
+      canManageNicknames: hasManageNicknames,
+      permissions: data.permissions
+    };
+  } else {
+    const body = await response.text();
+    console.error(`Error checking bot permissions: [${response.status}] ${response.statusText}: ${body}`);
+    throw new Error(`Error checking bot permissions: [${response.status}] ${response.statusText}`);
+  }
+}

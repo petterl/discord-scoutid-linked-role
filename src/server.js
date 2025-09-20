@@ -125,6 +125,9 @@ app.get('/linked-role', async (req, res) => {
     // 3. Update the users metadata in discord, assuming future updates will be posted to the `/update-metadata` endpoint
     await storage.setLinkedScoutIDUserId(discordUserId, userId);
     await updateMetadata(discordUserId);
+    await updateNickname(discordUserId);
+
+    // 4. Lets the user know it's all good and to go back to Discord
     res.send('You did it!  Now go back to Discord.');
 
   } catch (e) {
@@ -183,6 +186,79 @@ async function updateMetadata(userId) {
 
   // Push the data to Discord.
   await discord.pushMetadata(scoutIDTokens.discord_user_id, discordTokens, metadata);
+}
+
+/**
+ * Update a Discord user's nickname to their ScoutID name.
+ * This will attempt to update the nickname in all guilds where:
+ * 1. The user is a member
+ * 2. The bot is present and has "Manage Nicknames" permission
+ */
+async function updateNickname(userId) {
+  try {
+    // Fetch the linked ScoutID user
+    const scoutId = await storage.getLinkedScoutIDUserId(userId);
+    if (!scoutId) {
+      console.log(`No linked ScoutID user for Discord user ${userId}, skipping nickname update`);
+      return;
+    }
+
+    // Get ScoutID tokens and user data
+    const scoutIDTokens = await storage.getScoutIDTokens(scoutId);
+    const scoutIDUserData = await scoutid.getUserData(scoutIDTokens);
+    
+    if (!scoutIDUserData.name) {
+      console.log(`No name found in ScoutID data for user ${userId}, skipping nickname update`);
+      return;
+    }
+
+    let nickname = scoutIDUserData.name;
+    if (nickname.length > 32) {
+      nickname = nickname.substring(0, 32);
+    }
+
+    console.log(`Updating nickname for Discord user ${userId} to "${nickname}"`);
+    
+    // Get Discord user tokens to fetch their guilds
+    const discordTokens = await storage.getDiscordTokens(userId);
+    if (!discordTokens) {
+      console.log(`No Discord tokens found for user ${userId}, skipping nickname update`);
+      return;
+    }
+
+    try {
+      // Get the guilds the user is a member of
+      const userGuilds = await discord.getUserGuilds(discordTokens);
+      console.log(`User ${userId} is a member of ${userGuilds.length} guilds`);
+
+      // Attempt to update nickname in each guild
+      let successCount = 0;
+      for (const guild of userGuilds) {
+        try {
+          // Check if our bot has permissions in this guild
+          const permissions = await discord.checkBotPermissions(guild.id);
+          
+          if (permissions.canManageNicknames) {
+            const success = await discord.updateGuildMemberNickname(guild.id, userId, nickname);
+            if (success) successCount++;
+          } else {
+            console.log(`Bot lacks "Manage Nicknames" permission in guild ${guild.id} (${guild.name})`);
+          }
+        } catch (e) {
+          // Bot might not be in this guild, or other permission issues
+          console.log(`Cannot update nickname in guild ${guild.id} (${guild.name}): ${e.message}`);
+        }
+      }
+
+      console.log(`Successfully updated nickname in ${successCount} out of ${userGuilds.length} guilds`);
+
+    } catch (e) {
+      console.error(`Error fetching user guilds for ${userId}:`, e.message);
+    }
+    
+  } catch (e) {
+    console.error(`Error updating nickname for user ${userId}:`, e);
+  }
 }
 
 const port = process.env.PORT || 3000;
