@@ -1,10 +1,10 @@
-import * as dotenv from 'dotenv'
+import * as dotenv from "dotenv";
 
 /**
  * Load environment variables from a .env file, if it exists.
  */
 
-dotenv.config()
+dotenv.config();
 
 const config = {
   DISCORD_TOKEN: process.env.DISCORD_TOKEN,
@@ -19,10 +19,15 @@ const config = {
   SCOUTID_SCOPES: process.env.SCOUTID_SCOPES,
   SCOUTID_EVENT_ID: process.env.SCOUTID_EVENT_ID,
 
+  SCOUTNET_EVENT_ID: process.env.SCOUTNET_EVENT_ID,
+  SCOUTNET_QUESTIONS_APIKEY: process.env.SCOUTNET_QUESTIONS_APIKEY,
+  SCOUTNET_PARTICIPANTS_APIKEY: process.env.SCOUTNET_PARTICIPANTS_APIKEY,
+  SCOUTNET_FORM_ID: process.env.SCOUTNET_FORM_ID,
+
   COOKIE_SECRET: process.env.COOKIE_SECRET,
-  
+
   // Redis configuration
-  REDIS_URL: process.env.REDIS_URL || 'redis://redis:6379',
+  REDIS_URL: process.env.REDIS_URL || "redis://redis:6379",
 };
 
 export default config;

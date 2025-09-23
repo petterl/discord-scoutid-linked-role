@@ -113,9 +113,6 @@ export async function getUserData(tokens) {
       email: data.email,
     };
   
-    if (config.SCOUTID_EVENT_ID) {
-      metadata.required_event_id = true;
-    }
     return metadata;
   } else {
     const errorText = await response.text();
