@@ -43,21 +43,25 @@ export async function getOAuthTokens(code) {
     redirect_uri: config.DISCORD_REDIRECT_URI,
   });
 
-  const response = await fetch(url, {
-    body,
-    method: "POST",
-    headers: {
-      "Content-Type": "application/x-www-form-urlencoded",
-    },
+  return await retryWithBackoff(async () => {
+    const response = await fetch(url, {
+      body,
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+    });
+    if (response.ok) {
+      const data = await response.json();
+      return data;
+    } else {
+      const error = new Error(
+        `Error fetching OAuth tokens: [${response.status}] ${response.statusText}`
+      );
+      error.status = response.status;
+      throw error;
+    }
   });
-  if (response.ok) {
-    const data = await response.json();
-    return data;
-  } else {
-    throw new Error(
-      `Error fetching OAuth tokens: [${response.status}] ${response.statusText}`
-    );
-  }
 }
 
 /**
@@ -74,23 +78,30 @@ export async function getAccessToken(userId, tokens) {
       grant_type: "refresh_token",
       refresh_token: tokens.refresh_token,
     });
-    const response = await fetch(url, {
-      body,
-      method: "POST",
-      headers: {
-        "Content-Type": "application/x-www-form-urlencoded",
-      },
+
+    const newTokens = await retryWithBackoff(async () => {
+      const response = await fetch(url, {
+        body,
+        method: "POST",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+        },
+      });
+      if (response.ok) {
+        const tokens = await response.json();
+        tokens.expires_at = Date.now() + tokens.expires_in * 1000;
+        return tokens;
+      } else {
+        const error = new Error(
+          `Error refreshing access token: [${response.status}] ${response.statusText}`
+        );
+        error.status = response.status;
+        throw error;
+      }
     });
-    if (response.ok) {
-      const tokens = await response.json();
-      tokens.expires_at = Date.now() + tokens.expires_in * 1000;
-      await storage.storeDiscordTokens(userId, tokens);
-      return tokens.access_token;
-    } else {
-      throw new Error(
-        `Error refreshing access token: [${response.status}] ${response.statusText}`
-      );
-    }
+
+    await storage.storeDiscordTokens(userId, newTokens);
+    return newTokens.access_token;
   }
   return tokens.access_token;
 }
@@ -100,18 +111,47 @@ export async function getAccessToken(userId, tokens) {
  */
 export async function getUserData(tokens) {
   const url = "https://discord.com/api/v10/oauth2/@me";
-  const response = await fetch(url, {
-    headers: {
-      Authorization: `Bearer ${tokens.access_token}`,
-    },
+
+  return await retryWithBackoff(async () => {
+    const response = await fetch(url, {
+      headers: {
+        Authorization: `Bearer ${tokens.access_token}`,
+      },
+    });
+    if (response.ok) {
+      const data = await response.json();
+      return data;
+    } else {
+      const error = new Error(
+        `Error fetching user data: [${response.status}] ${response.statusText}`
+      );
+      error.status = response.status;
+      throw error;
+    }
   });
-  if (response.ok) {
-    const data = await response.json();
-    return data;
-  } else {
-    throw new Error(
-      `Error fetching user data: [${response.status}] ${response.statusText}`
-    );
+}
+
+/**
+ * Retry function with exponential backoff for rate limiting
+ */
+async function retryWithBackoff(fn, maxRetries = 3) {
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      const result = await fn();
+      return result;
+    } catch (error) {
+      if (error.status === 429 && attempt < maxRetries - 1) {
+        const delay = Math.pow(2, attempt) * 1000; // Exponential backoff: 1s, 2s, 4s
+        console.log(
+          `Rate limited, retrying in ${delay}ms (attempt ${
+            attempt + 1
+          }/${maxRetries})`
+        );
+        await new Promise((resolve) => setTimeout(resolve, delay));
+      } else {
+        throw error;
+      }
+    }
   }
 }
 
@@ -122,28 +162,33 @@ export async function getUserData(tokens) {
 export async function pushMetadata(userId, tokens, metadata) {
   // PUT /users/@me/applications/:id/role-connection
   const url = `https://discord.com/api/v10/users/@me/applications/${config.DISCORD_CLIENT_ID}/role-connection`;
-  const accessToken = await getAccessToken(userId, tokens);
-  const body = {
-    platform_name: "ScoutID",
-    metadata,
-  };
-  const response = await fetch(url, {
-    method: "PUT",
-    body: JSON.stringify(body),
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      "Content-Type": "application/json",
-    },
+
+  await retryWithBackoff(async () => {
+    const accessToken = await getAccessToken(userId, tokens);
+    const body = {
+      platform_name: "ScoutID",
+      metadata,
+    };
+    const response = await fetch(url, {
+      method: "PUT",
+      body: JSON.stringify(body),
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+    });
+    if (!response.ok) {
+      const body2 = await response.text();
+      console.error(
+        `Error pushing discord metadata: [${response.status}] ${response.statusText}: ${body2}`
+      );
+      const error = new Error(
+        `Error pushing discord metadata: [${response.status}] ${response.statusText}`
+      );
+      error.status = response.status;
+      throw error;
+    }
   });
-  if (!response.ok) {
-    const body2 = await response.text();
-    console.error(
-      `Error pushing discord metadata: [${response.status}] ${response.statusText}: ${body2}`
-    );
-    throw new Error(
-      `Error pushing discord metadata: [${response.status}] ${response.statusText}`
-    );
-  }
 }
 
 /**
@@ -153,20 +198,25 @@ export async function pushMetadata(userId, tokens, metadata) {
 export async function getMetadata(userId, tokens) {
   // GET /users/@me/applications/:id/role-connection
   const url = `https://discord.com/api/v10/users/@me/applications/${config.DISCORD_CLIENT_ID}/role-connection`;
-  const accessToken = await getAccessToken(userId, tokens);
-  const response = await fetch(url, {
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-    },
+
+  return await retryWithBackoff(async () => {
+    const accessToken = await getAccessToken(userId, tokens);
+    const response = await fetch(url, {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+      },
+    });
+    if (response.ok) {
+      const data = await response.json();
+      return data;
+    } else {
+      const error = new Error(
+        `Error getting discord metadata: [${response.status}] ${response.statusText}`
+      );
+      error.status = response.status;
+      throw error;
+    }
   });
-  if (response.ok) {
-    const data = await response.json();
-    return data;
-  } else {
-    throw new Error(
-      `Error getting discord metadata: [${response.status}] ${response.statusText}`
-    );
-  }
 }
 
 /**
@@ -175,20 +225,25 @@ export async function getMetadata(userId, tokens) {
  */
 export async function getUserGuilds(tokens) {
   const url = "https://discord.com/api/v10/users/@me/guilds";
-  const response = await fetch(url, {
-    headers: {
-      Authorization: `Bearer ${tokens.access_token}`,
-    },
-  });
 
-  if (response.ok) {
-    const data = await response.json();
-    return data;
-  } else {
-    throw new Error(
-      `Error fetching user guilds: [${response.status}] ${response.statusText}`
-    );
-  }
+  return await retryWithBackoff(async () => {
+    const response = await fetch(url, {
+      headers: {
+        Authorization: `Bearer ${tokens.access_token}`,
+      },
+    });
+
+    if (response.ok) {
+      const data = await response.json();
+      return data;
+    } else {
+      const error = new Error(
+        `Error fetching user guilds: [${response.status}] ${response.statusText}`
+      );
+      error.status = response.status;
+      throw error;
+    }
+  });
 }
 
 /**
@@ -198,63 +253,35 @@ export async function getUserGuilds(tokens) {
 export async function updateGuildMemberNickname(guildId, userId, nickname) {
   const url = `https://discord.com/api/v10/guilds/${guildId}/members/${userId}`;
 
-  const response = await fetch(url, {
-    method: "PATCH",
-    headers: {
-      Authorization: `Bot ${config.DISCORD_TOKEN}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      nick: nickname,
-    }),
-  });
+  return await retryWithBackoff(async () => {
+    const response = await fetch(url, {
+      method: "PATCH",
+      headers: {
+        Authorization: `Bot ${config.DISCORD_TOKEN}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        nick: nickname,
+      }),
+    });
 
-  if (response.ok) {
-    console.log(
-      `Successfully updated nickname for user ${userId} in guild ${guildId} to "${nickname}"`
-    );
-    return true;
-  } else {
-    const errorText = await response.text();
-    console.error(
-      `Error updating nickname in guild ${guildId}: [${response.status}] ${response.statusText} - ${errorText}`
-    );
-    return false;
-  }
-}
-
-/**
- * Check if the bot has permission to manage nicknames in a guild.
- */
-export async function checkBotPermissions(guildId) {
-  const url = `https://discord.com/api/v10/guilds/${guildId}/members/@me`;
-
-  const response = await fetch(url, {
-    headers: {
-      Authorization: `Bot ${config.DISCORD_TOKEN}`,
-    },
-  });
-
-  if (response.ok) {
-    const data = await response.json();
-    // Check if bot has MANAGE_NICKNAMES permission (0x8000000)
-    const hasManageNicknames = (data.permissions & 0x8000000) === 0x8000000;
-    return {
-      canManageNicknames: hasManageNicknames,
-      permissions: data.permissions,
-    };
-  } else {
-    const body = await response.text();
-    console.error(
-      `Error checking bot permissions in guild ${guildId}: [${response.status}] ${response.statusText}: ${body}`
-    );
-    // Return false for permissions if we can't check (likely bot not in guild)
-    return {
-      canManageNicknames: false,
-      permissions: 0,
-      error: `${response.status}: ${response.statusText}`,
-    };
-  }
+    if (response.ok) {
+      console.log(
+        `Successfully updated nickname for user ${userId} in guild ${guildId} to "${nickname}"`
+      );
+      return true;
+    } else {
+      const errorText = await response.text();
+      console.error(
+        `Error updating nickname in guild ${guildId}: [${response.status}] ${response.statusText} - ${errorText}`
+      );
+      const error = new Error(
+        `Error updating nickname in guild ${guildId}: [${response.status}] ${response.statusText}`
+      );
+      error.status = response.status;
+      throw error;
+    }
+  }).catch(() => false); // Return false on error instead of throwing
 }
 
 /**
@@ -265,24 +292,33 @@ export async function addRolesToUser(guildId, userId, roleNames) {
   try {
     // First, get the guild roles to find the role ID by name
     const rolesUrl = `https://discord.com/api/v10/guilds/${guildId}/roles`;
-    const rolesResponse = await fetch(rolesUrl, {
-      headers: {
-        Authorization: `Bot ${config.DISCORD_TOKEN}`,
-      },
+
+    const roles = await retryWithBackoff(async () => {
+      const rolesResponse = await fetch(rolesUrl, {
+        headers: {
+          Authorization: `Bot ${config.DISCORD_TOKEN}`,
+        },
+      });
+
+      if (!rolesResponse.ok) {
+        const errorText = await rolesResponse.text();
+        console.error(
+          `Error fetching guild roles: [${rolesResponse.status}] ${rolesResponse.statusText} - ${errorText}`
+        );
+        const error = new Error(
+          `Error fetching guild roles: [${rolesResponse.status}] ${rolesResponse.statusText}`
+        );
+        error.status = rolesResponse.status;
+        throw error;
+      }
+      return await rolesResponse.json();
     });
 
-    if (!rolesResponse.ok) {
-      const errorText = await rolesResponse.text();
-      console.error(
-        `Error fetching guild roles: [${rolesResponse.status}] ${rolesResponse.statusText} - ${errorText}`
-      );
-      return false;
-    }
-
-    const roles = await rolesResponse.json();
     // Find role IDs for the given role names (case insensitive)
     const targetRoles = roles.filter((role) =>
-      roleNames.includes(role.name.toLowerCase())
+      roleNames.some(
+        (roleName) => role.name.toLowerCase() === roleName.toLowerCase()
+      )
     );
 
     if (targetRoles.length === 0) {
@@ -294,65 +330,46 @@ export async function addRolesToUser(guildId, userId, roleNames) {
 
     // Add the role to the user
     for (const role of targetRoles) {
-      const addRoleUrl = `https://discord.com/api/v10/guilds/${guildId}/members/${userId}/roles/${role.id}`;
-      const addRoleResponse = await fetch(addRoleUrl, {
-        method: "PUT",
-        headers: {
-          Authorization: `Bot ${config.DISCORD_TOKEN}`,
-        },
+      const success = await retryWithBackoff(async () => {
+        const addRoleUrl = `https://discord.com/api/v10/guilds/${guildId}/members/${userId}/roles/${role.id}`;
+        const addRoleResponse = await fetch(addRoleUrl, {
+          method: "PUT",
+          headers: {
+            Authorization: `Bot ${config.DISCORD_TOKEN}`,
+          },
+        });
+
+        if (!addRoleResponse.ok) {
+          const errorText = await addRoleResponse.text();
+          console.error(
+            `Error adding role "${role.name}" to user ${userId} in guild ${guildId}: [${addRoleResponse.status}] ${addRoleResponse.statusText} - ${errorText}`
+          );
+          const error = new Error(
+            `Error adding role "${role.name}" to user ${userId} in guild ${guildId}: [${addRoleResponse.status}] ${addRoleResponse.statusText}`
+          );
+          error.status = addRoleResponse.status;
+          throw error;
+        } else {
+          console.log(
+            `Successfully added role "${role.name}" to user ${userId} in guild ${guildId}`
+          );
+          return true;
+        }
+      }).catch(() => {
+        console.error(`Failed to add role "${role.name}" after retries`);
+        return false;
       });
 
-      if (!addRoleResponse.ok) {
-        const errorText = await addRoleResponse.text();
-        console.error(
-          `Error adding role "${role.name}" to user ${userId} in guild ${guildId}: [${addRoleResponse.status}] ${addRoleResponse.statusText} - ${errorText}`
-        );
-        return false;
-      } else {
-        console.log(
-          `Successfully added role "${role.name}" to user ${userId} in guild ${guildId}`
-        );
-      }
+      if (!success) return false;
     }
     return true;
   } catch (e) {
     console.error(
-      `Error adding role "${roleName}" to user ${userId} in guild ${guildId}:`,
+      `Error adding roles "${roleNames.join(
+        ", "
+      )}" to user ${userId} in guild ${guildId}:`,
       e
     );
     return false;
-  }
-}
-
-/**
- * Check if the bot has permission to manage roles in a guild.
- */
-export async function checkManageRolesPermission(guildId) {
-  const url = `https://discord.com/api/v10/guilds/${guildId}/members/@me`;
-
-  const response = await fetch(url, {
-    headers: {
-      Authorization: `Bot ${config.DISCORD_TOKEN}`,
-    },
-  });
-
-  if (response.ok) {
-    const data = await response.json();
-    // Check if bot has MANAGE_ROLES permission (0x10000000)
-    const hasManageRoles = (data.permissions & 0x10000000) === 0x10000000;
-    return {
-      canManageRoles: hasManageRoles,
-      permissions: data.permissions,
-    };
-  } else {
-    const body = await response.text();
-    console.error(
-      `Error checking manage roles permission in guild ${guildId}: [${response.status}] ${response.statusText}: ${body}`
-    );
-    return {
-      canManageRoles: false,
-      permissions: 0,
-      error: `${response.status}: ${response.statusText}`,
-    };
   }
 }
