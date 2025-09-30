@@ -147,9 +147,22 @@
             <p>• You can now access Scout-specific channels and features</p>
         </div>
         
-        <a href="https://discord.com/app" class="discord-button">
-            Return to Discord
-        </a>
+        <button type="button" class="discord-button" id="close-tab-btn">
+            Close Tab
+        </button>
+        <script>
+            document.getElementById('close-tab-btn').addEventListener('click', function () {
+            window.close();
+            // Fallback: if the tab wasn't allowed to close (user opened it directly), redirect to Discord
+            setTimeout(function () {
+                try {
+                if (!document.hidden) {
+                    window.location.href = 'https://discord.com/app';
+                }
+                } catch (e) {}
+            }, 300);
+            });
+        </script>
         
         <p style="margin-top: 20px; font-size: 14px; color: #999;">
             You can now close this tab and return to Discord to see your updated profile.
