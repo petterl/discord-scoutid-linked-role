@@ -1,114 +1,150 @@
 # Discord ScoutID Linked Role
 
-This repository contains a linked role bot that will link your discord account to an scoutID account.
+A Discord bot that links Discord accounts to ScoutID and automatically assigns roles based on ScoutNet event data.
 
-## Bot functionality
+## What it does
 
-- When a user clicks the "Link your ScoutID" button in Discord, they will be redirected to authenticate with ScoutID.
-- After successful authentication, the bot will check if the user has the required roles (if specified).
-- If the user meets the criteria, the bot will assign them a specific role in the Discord server.
-- Optionally, the bot can also update the user's nickname in the server to match their ScoutID name.
+1. **ScoutID linking** - Users click "Link your ScoutID" in Discord and authenticate via ScoutID (OIDC). On success they get the `scout` role and their nickname is updated.
+2. **Event roles** - If `SCOUTNET_EVENT_ID` is configured, the bot checks if the user is registered in that event and assigns an event role.
+3. **Fee-based roles** - Maps the participant's fee category to a Discord role. Categories with a division config get division-specific roles (e.g. `Deltagare-02`, `IST-Patrull-05`), others get a waiting role (e.g. `Deltagare-Väntande`) or a static role (e.g. `IST-Direktresa`, `cmt`).
+4. **Division roles** - Each fee category can have its own ScoutNet question for division assignment, with separate role patterns for "has division" and "no division yet".
+5. **Slash command** - `/refresh-scoutid` lets users refresh their own roles. Admins can refresh other users or all linked users at once.
+
+## Role assignment logic
+
+Fee categories and their role patterns:
+
+| Fee ID | Category | Division question | With division | Without division |
+|--------|----------|-------------------|---------------|------------------|
+| 25694, 27561 | deltagare | 88168 | `Deltagare-{div}` | `Deltagare-Väntande` |
+| 25696 | ist | 88168 | `IST-Patrull-{div}` | `IST-Väntande` |
+| 25702 | IST-Direktresa | — | `IST-Direktresa` | — |
+| 33293, 34850 | ledare | 107592 | `Ledare-{div}` | `Ledare-Väntande` |
+| 25697, 25693 | cmt | — | `cmt` | — |
+
+Division numbers are zero-padded to minimum 2 digits (e.g. `3` → `03`, `100` → `100`).
+
+**Note:** The bot cannot modify roles for users who have a higher role than the bot in the Discord role hierarchy (e.g. server admins above the bot).
 
 ## Project structure
 
-All of the files for the project are on the left-hand side. Here's a quick glimpse at the structure:
-
 ```
-├── assets          -> Images used in this tutorial
-├── src
-│   ├── config.js   -> Parsing of local configuration
-│   ├── discord.js  -> Discord specific auth & API wrapper
-│   ├── register.js -> Tool to register the metadata schema
-│   ├── scoutid.js  -> ScoutID specific auth & API wrapper
-│   ├── server.js   -> Main entry point for the application
-│   ├── storage.js  -> Provider for storing OAuth2 tokens
-├── .env -> your credentials and IDs
-├── package.json
-└── README.md
+src/
+├── server.js     Main Express server with OAuth flow + interactions endpoint
+├── config.js     Environment configuration
+├── discord.js    Discord OAuth2 & API (roles, nicknames, slash commands)
+├── scoutid.js    ScoutID OIDC authentication
+├── scoutnet.js   ScoutNet API client (event participants)
+├── roles.js      Role determination and sync logic
+├── storage.js    Redis storage for tokens and linked accounts
+├── register.js   One-time metadata + slash command registration
+└── templates/
+    └── success.html
 ```
 
-## Running app locally
+## Setup
 
-Before you start, you'll need to [create a Discord app](https://discord.com/developers/applications) with the `bot` scope
+### 1. Create a Discord app
 
-### Docker build
+Create an app at https://discord.com/developers/applications with the `bot` scope. You need:
+- Bot token (`DISCORD_TOKEN`)
+- Client ID (`DISCORD_CLIENT_ID`), secret, public key
+- The bot needs **Manage Roles** and **Manage Nicknames** permissions
 
-1. First clone the project
-2. Build the docker image
+### 2. Configure environment
 
-```
-docker build . -t discord-scoutid-linked-role
-```
+Copy `.env.example` to `.env` and fill in your credentials. Key role config:
 
-### Get app credentials
-
-Fetch the credentials from your app's settings and add them to a `.env` file. You'll need your bot token (`DISCORD_TOKEN`), client ID (`DISCORD_CLIENT_ID`), client secret (`DISCORD_CLIENT_SECRET`). You'll also need a redirect URI (`DISCORD_REDIRECT_URI`) and a randomly generated UUID (`COOKIE_SECRET`), which are both explained below.
-
-The scoutID credentials you get by mailing ou
-
-```
-DISCORD_CLIENT_ID=<your OAuth2 client Id>
-DISCORD_CLIENT_SECRET=<your OAuth2 client secret>
-DISCORD_TOKEN=<your bot token>
-DISCORD_REDIRECT_URI=https://<your-project-url>/discord-oauth-callback
-
-SCOUTID_CLIENT_ID=<your ScoutID client id>
-SCOUTID_CLIENT_SECRET=<your ScoutID client secret>
-SCOUTID_REDIRECT_URI=https://<your-project-url>/scoutid-oauth-callback
-SCOUTID_SCOPES=openid profile email roles
-SCOUTID_EVENT_ID=<set to an eventID if you require people to have a role on that event to verify>
-
-COOKIE_SECRET=<random generated UUID>
+```bash
+SCOUTNET_FEE_ROLES=25694:deltagare,27561:deltagare,25696:ist,25702:IST-Direktresa,33293:ledare,34850:ledare,25697:cmt,25693:cmt
+SCOUTNET_DIVISION_ROLES=deltagare:88168:Deltagare-{div}:Deltagare-Väntande,ist:88168:IST-Patrull-{div}:IST-Väntande,ledare:107592:Ledare-{div}:Ledare-Väntande
 ```
 
-For the UUID (`COOKIE_SECRET`), you can run the following commands:
+### 3. Run with Docker Compose (local dev)
 
-```
-$ node
-crypto.randomUUID()
-```
-
-Copy and paste the value into your `.env` file.
-
-### Running your app
-
-After your credentials are added, you can run your app:
-
-```
-$ docker run -it --env-file .env discord-scoutid-linked-role
+```bash
+docker-compose up -d
 ```
 
-And, just once, you need to register you connection metadata schema. In a new window, run:
+### 4. Register metadata and slash command (once)
 
-```
-$ docker run -it --env-file .env discord-scoutid-linked-role node src/register.js
-```
-
-### Set up interactivity
-
-The project needs a public endpoint where Discord can send requests. To develop and test locally, you can use something like [`ngrok`](https://ngrok.com/) to tunnel HTTP traffic.
-
-To use ngrok you can use the docker-compose file setup
-
-```
-$ docker-compose up -d
+```bash
+docker run --rm --env-file .env acrwsj27prodsec.azurecr.io/discord-scoutid-linked-role:latest node src/register.js
 ```
 
-You can now connect to http://localhost:4040 to see the status.
+### 5. Configure Discord Developer Portal
 
-Copy the forwarding address that starts with `https`, in this case `https://1234-someurl.ngrok.io`, then go to your [app's settings](https://discord.com/developers/applications).
+- **General Information** → **Linked Roles Verification URL**: `https://discord-scoutid.wsj27.scouterna.net/linked-role`
+- **General Information** → **Interactions Endpoint URL**: `https://discord-scoutid.wsj27.scouterna.net/interactions`
+- **OAuth2** → Add redirect: `https://discord-scoutid.wsj27.scouterna.net/discord-oauth-callback`
 
-On the **General Information** tab, there will be an **Linked Roles Verification URL**. Paste your ngrok address there, and append `/linked-role` (`https://1234-someurl.ngrok.io/linked-role` in the example).
+### 6. Discord server role hierarchy
 
-You should also paste your ngrok address into the `DISCORD_REDIRECT_URI` and 'SCOUTID_REDIRECT_URL' variables in your `.env` file, with `/discord-oauth-callback` and `/scoutid-oauth-callback` appended (`https://1234-someurl.ngrok.io/discord-oauth-callback` in the example). Then go to the **General** tab under **OAuth2** in your [app's settings](https://discord.com/developers/applications), and add that same address to the list of **Redirects**.
+In Server Settings → Roles, make sure the bot's role ("ScoutID bot") is **above** all the roles it needs to assign (Scout, Deltagare-*, IST-*, Ledare-*, cmt, etc.).
 
-Click **Save Changes** and restart your app.
+## Slash command: `/refresh-scoutid`
 
-## Other resources
+| Usage | Who can run | What it does |
+|-------|-------------|-------------|
+| `/refresh-scoutid` | Everyone | Refreshes your own roles |
+| `/refresh-scoutid person:@user` | Admins | Refreshes that user's roles |
+| `/refresh-scoutid alla:true` | Admins | Refreshes all linked users |
 
-- Read **[the tutorial](https://discord.com/developers/docs/tutorials/configuring-app-metadata-for-linked-roles)** for in-depth information.
-- Join the **[Discord Developers server](https://discord.gg/discord-developers)** to ask questions about the API, attend events hosted by the Discord API team, and interact with other devs.
+The command shows what roles were added or removed.
 
-# TODO
+## Deployment to Azure
 
-- Connect to scoutnet to check if user is in the event
+Infrastructure is managed with Terraform in the `terraform/` directory (Azure Container Apps + Redis + ACR).
+
+### Build and push the Docker image
+
+Build from WSL (uses Sectra npm registry):
+
+```bash
+# Login to Azure and ACR
+az login
+az acr login --name acrwsj27prodsec
+
+# Build and push
+docker build --no-cache -t acrwsj27prodsec.azurecr.io/discord-scoutid-linked-role:latest .
+docker push acrwsj27prodsec.azurecr.io/discord-scoutid-linked-role:latest
+```
+
+### Deploy with Terraform
+
+```bash
+cd terraform
+terraform init              # first time only
+terraform plan -var-file="secrets.tfvars"
+terraform apply -var-file="secrets.tfvars"
+```
+
+### Update a running deployment
+
+After pushing a new image:
+
+```bash
+az containerapp update \
+  --name app-discord-scoutid-prod-sec \
+  --resource-group rg-discord-scoutid-prod-sec \
+  --image acrwsj27prodsec.azurecr.io/discord-scoutid-linked-role:latest
+```
+
+### View logs
+
+```bash
+az containerapp logs show \
+  --name app-discord-scoutid-prod-sec \
+  --resource-group rg-discord-scoutid-prod-sec \
+  --follow
+```
+
+## Local development with ngrok
+
+The `docker-compose.yml` includes an ngrok service for tunneling. Set `NGROK_AUTHTOKEN` and `NGROK_URL` in `.env`, then check http://localhost:4040 for your public URL.
+
+## Troubleshooting
+
+- **403 when adding roles**: The bot can't assign roles to users above it in the role hierarchy, or the role itself is above the bot. Check role ordering in Discord Server Settings.
+- **Redis connection errors in register.js**: Harmless — register.js only talks to Discord API but imports storage which tries to connect to Redis.
+- **"Applikationen svarade inte"**: Check that the Interactions Endpoint URL is set correctly in the Discord Developer Portal and the container is running.

@@ -2,129 +2,43 @@ import config from "./config.js";
 import * as storage from "./storage.js";
 
 /**
- * Code specific to communicating with the ScoutNet API.
- * See https://scoutnet.se for more details.
+ * ScoutNet API client for event participant data.
+ * See https://scoutnet.se for API details.
+ */
+
+/**
+ * Get a specific participant by member ID.
+ * Returns null if not found.
+ */
+export async function getParticipant(memberId) {
+  const participants = await getParticipants();
+  const key = String(memberId);
+  return participants[key] ?? null;
+}
+
+/**
+ * Get all participants for the configured event.
+ * Results are cached for 10 minutes.
  *
+ * Each participant has: member_no, first_name, last_name,
+ * registration_date, cancelled_date, fee, questions, etc.
  */
-
-/**
- * Get specific participant data from ScoutNet
- * Return null if participant is missing
- */
-export async function getParticipant(member_id) {
-  const participants = await getParticipants(config.SCOUTNET_FORM_ID);
-  const key = String(member_id);
-  return Object.prototype.hasOwnProperty.call(participants, key)
-    ? participants[key]
-    : null;
-}
-
-/**
- * Get all participants and their answers to the questions for a specific form.
- * 
- * Example response:
-  {
-    "participants": {
-        "123": {
-            "member_no": 123,
-            "first_name": "Petter",
-            "last_name": "Sandholdt",
-            "registration_date": "2025-06-29 18:15:04",
-            "cancelled_date": null,
-            "questions": {
-                "82553": "55897",
-                "82551": [
-                    "55894"
-                ],
-                "82560": "Nej",
-            },
-        },
-    },
-  }
-*/
 export async function getParticipants() {
-  // Check cache first
-  const cached = await storage.getScoutNetdata("participants");
-  if (cached) {
-    return cached;
-  }
-  // Not in cache, fetch from API
+  const cached = await storage.getScoutNetData("participants");
+  if (cached) return cached;
+
   const url = `https://scoutnet.se/api/project/get/participants?id=${config.SCOUTNET_EVENT_ID}&key=${config.SCOUTNET_PARTICIPANTS_APIKEY}`;
-  const response = await fetch(url, {
-    method: "GET",
-    headers: {
-      "Content-Type": "application/json",
-    },
-  });
-  if (response.ok) {
-    // Parse and cache for 10 minutes
-    const data = await response.json();
-    storage.storeScoutNetdata("participants", data["participants"]);
-    return data["participants"];
-  } else {
+  const response = await fetch(url);
+
+  if (!response.ok) {
     const errorText = await response.text();
     throw new Error(
-      `Error fetching ScoutNet participants: [${response.status}] ${response.statusText} - ${errorText}`
+      `ScoutNet API error: [${response.status}] ${response.statusText} - ${errorText}`
     );
   }
-}
 
-/**
- * Get all forms for an event.
- */
-export async function getForms() {
-  // Check cache first
-  const cached = await storage.getScoutNetdata("forms");
-  if (cached) {
-    return cached;
-  }
-  // Not in cache, fetch from API
-  const url = `https://scoutnet.se/api/project/get/questions?id=${config.SCOUTNET_EVENT_ID}&key=${config.SCOUTNET_QUESTIONS_APIKEY}`;
-  const response = await fetch(url, {
-    method: "GET",
-    headers: {
-      "Content-Type": "application/json",
-    },
-  });
-  if (response.ok) {
-    const data = await response.json();
-
-    const forms = data["forms"];
-    storage.storeScoutNetdata("forms", forms);
-    return forms;
-  } else {
-    const errorText = await response.text();
-    throw new Error(
-      `Error fetching ScoutNet forms: [${response.status}] ${response.statusText} - ${errorText}`
-    );
-  }
-}
-
-/**
- * Get all questions and answer types for the questions for a specific form.
- */
-export async function getQuestions(form_id) {
-  // Check cache first
-  const cached = await storage.getScoutNetdata("questions");
-  if (cached) {
-    return cached;
-  }
-  // Not in cache, fetch from API
-  url = `https://scoutnet.se/api/project/get/questions?id=${config.SCOUTNET_EVENT_ID}&key=${config.SCOUTNET_QUESTIONS_APIKEY}&form_id=${form_id}`;
-  const response = await fetch(url, {
-    method: "GET",
-    headers: {
-      "Content-Type": "application/json",
-    },
-  });
-  if (response.ok) {
-    const data = await response.json();
-    storage.storeScoutNetdata("questions", data);
-    return data;
-  } else {
-    const errorText = await response.text();
-    throw new Error(
-      `Error fetching ScoutNet participant questions: [${response.status}] ${response.statusText} - ${errorText}`
-    );
-  }
+  const data = await response.json();
+  const participants = data.participants ?? data;
+  await storage.storeScoutNetData("participants", participants);
+  return participants;
 }

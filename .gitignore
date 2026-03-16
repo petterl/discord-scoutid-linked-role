@@ -2,3 +2,12 @@ node_modules
 .DS_Store
 .env
 scoutid-metadata.json
+
+# Terraform
+**/secrets.tfvars
+**/.terraform
+**/.terraform.lock.hcl
+**/terraform.tfstate
+**/terraform.tfstate*.backup
+**/*tfplan
+terraform/terraform.tfstate.1763157238.backup

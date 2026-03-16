@@ -4,59 +4,34 @@ import cookieParser from "cookie-parser";
 import config from "./config.js";
 import * as discord from "./discord.js";
 import * as scoutid from "./scoutid.js";
-import * as scoutnet from "./scoutnet.js";
 import * as storage from "./storage.js";
+import * as roles from "./roles.js";
 import { getSuccessPageHTML } from "./templates.js";
-
-/**
- * Main HTTP server used for the bot.
- */
 
 const app = express();
 app.use(cookieParser(config.COOKIE_SECRET));
 
-/**
- * Just a happy little route to show our server is up.
- */
+// --- Health check ---
+
 app.get("/", (req, res) => {
   res.send("👋");
 });
 
-/**
- * Route configured in the Discord developer console which facilitates the
- * connection between Discord and any additional services you may use.
- * To start the flow, generate the OAuth2 consent dialog url for Discord,
- * and redirect the user there.
- */
+// --- OAuth flow: step 1 - redirect to Discord ---
+
 app.get("/linked-role", async (req, res) => {
   const { url, state } = discord.getOAuthUrl();
-
-  // Store the signed state param in the user's cookies so we can verify
-  // the value later. See:
-  // https://discord.com/developers/docs/topics/oauth2#state-and-security
   res.cookie("clientState", state, { maxAge: 1000 * 60 * 5, signed: true });
-
-  // Send the user to the Discord owned OAuth2 authorization endpoint
   res.redirect(url);
 });
 
-/**
- * Route configured in the Discord developer console, the redirect Url to which
- * the user is sent after approving the bot for their Discord account. This
- * completes a few steps:
- * 1. Uses the code to acquire Discord OAuth2 tokens
- * 2. Uses the Discord Access Token to fetch the user profile
- * 3. Stores the OAuth2 Discord Tokens in Redis / Firestore
- * 4. Lets the user know it's all good and to go back to Discord
- */
+// --- OAuth flow: step 2 - Discord callback → redirect to ScoutID ---
+
 app.get("/discord-oauth-callback", async (req, res) => {
-  console.log("/discord-oauth-callback called");
   try {
-    // 1. Uses the code and state to acquire Discord OAuth2 tokens
     const code = req.query["code"];
     const discordState = req.query["state"];
 
-    // make sure the state parameter is correct
     const { clientState } = req.signedCookies;
     if (clientState !== discordState) {
       console.error("State verification failed.");
@@ -64,31 +39,24 @@ app.get("/discord-oauth-callback", async (req, res) => {
     }
 
     const tokens = await discord.getOAuthTokens(code);
-
-    // 2. Uses the Discord Access Token to fetch the user profile
     const meData = await discord.getUserData(tokens);
     const userId = meData.user.id;
+
     await storage.storeDiscordTokens(userId, {
       access_token: tokens.access_token,
       refresh_token: tokens.refresh_token,
       expires_at: Date.now() + tokens.expires_in * 1000,
     });
 
-    // 3. Get ScoutID auth url to be able to redirect to it
-    const { state, nonce, codeVerifier, url } =
-      scoutid.getOidcAuthorizationUrl();
-
-    // Store the signed state param in the user's cookies so we can verify
-    // the value later.
-    res.cookie("clientState", state, { maxAge: 1000 * 60 * 5, signed: true });
-
-    // Store the state data for later verification
-    await storage.storeStateData(state, {
-      discordUserId: userId,
+    // Redirect to ScoutID for identity verification
+    const {
+      state,
       codeVerifier,
-    });
+      url,
+    } = scoutid.getOidcAuthorizationUrl();
 
-    // Send the user to the ScoutID OIDC authorization endpoint
+    res.cookie("clientState", state, { maxAge: 1000 * 60 * 5, signed: true });
+    await storage.storeStateData(state, { discordUserId: userId, codeVerifier });
     res.redirect(url);
   } catch (e) {
     console.error(e);
@@ -96,16 +64,14 @@ app.get("/discord-oauth-callback", async (req, res) => {
   }
 });
 
+// --- OAuth flow: step 3 - ScoutID callback → link accounts + assign roles ---
+
 app.get("/scoutid-oauth-callback", async (req, res) => {
-  console.log("/scoutid-oauth-callback called");
   try {
-    // 1. Uses the code and state to acquire ScoutID OIDC tokens
     const state = req.query["state"];
     const { discordUserId, codeVerifier } = await storage.getStateData(state);
 
-    // make sure the state parameter is correct
     const { clientState } = req.signedCookies;
-
     if (clientState !== state) {
       console.error("State verification failed.");
       return res.sendStatus(403);
@@ -113,40 +79,41 @@ app.get("/scoutid-oauth-callback", async (req, res) => {
 
     const code = req.query["code"];
     const tokens = await scoutid.getOidcTokens({ code, codeVerifier });
+    const scoutIDUser = await scoutid.getUserData(tokens);
 
-    // 2. Uses the Access Token to fetch the user profile
-    const scoutIDUserData = await scoutid.getUserData(tokens);
+    console.log(
+      `Linked ScoutID ${scoutIDUser.scoutid} to Discord user ${discordUserId}`
+    );
 
-    const userId = scoutIDUserData.scoutid;
-    console.log(`Got ScoutID user ${userId} for Discord user ${discordUserId}`);
-    await storage.storeScoutIDTokens(userId, {
+    await storage.storeScoutIDTokens(scoutIDUser.scoutid, {
       discord_user_id: discordUserId,
       access_token: tokens.access_token,
       refresh_token: tokens.refresh_token,
       expires_at: Date.now() + tokens.expires_in * 1000,
-      code_verifier: codeVerifier,
     });
 
-    // 3. Update the users metadata in discord, assuming future updates will be posted to the `/update-metadata` endpoint
-    await storage.setLinkedScoutIDUserId(discordUserId, userId);
+    // Link accounts and push metadata
+    await storage.setLinkedScoutIDUserId(discordUserId, scoutIDUser.scoutid);
+    await updateMetadata(discordUserId);
 
-    const metadata = await getMetadata(discordUserId);
-    await updateMetadata(discordUserId, metadata);
-
-    // 4. Add Discord role to the user
-    // await addDiscordRoles(discordUserId, ["wsj27", "ledare"]);
-
-    if (!scoutIDUserData.name) {
-      console.log(
-        `No name found in ScoutID data for user ${userId}, skipping nickname update`
-      );
-      return;
-    } else {
-      let nickname = scoutIDUserData.name;
-      await updateNickname(discordUserId, nickname);
+    // Assign Discord roles
+    try {
+      const guildId = config.DISCORD_GUILD_ID;
+      if (guildId) {
+        const desiredRoles = await roles.getDesiredRoles(scoutIDUser.scoutid);
+        if (desiredRoles.length > 0) {
+          await addDiscordRoles(discordUserId, desiredRoles);
+        }
+      }
+    } catch (e) {
+      console.error(`Error assigning roles for ${discordUserId}:`, e.message);
     }
 
-    // 4. Lets the user know it's all good and to go back to Discord
+    // Update nickname
+    if (scoutIDUser.name) {
+      await updateNickname(discordUserId, scoutIDUser.name);
+    }
+
     res.send(getSuccessPageHTML());
   } catch (e) {
     console.error(e);
@@ -154,203 +121,233 @@ app.get("/scoutid-oauth-callback", async (req, res) => {
   }
 });
 
-/**
- * Example route that would be invoked when an external data source changes.
- * This example calls a common `updateMetadata` method that pushes static
- * data to Discord.
- */
+// --- Manual metadata refresh ---
+
 app.get("/update-metadata", async (req, res) => {
-  console.log("/update-metadata called");
   try {
     const userId = req.query.userId;
-    const metadata = await getMetadata(userId);
-    await updateMetadata(userId, metadata);
-
+    await updateMetadata(userId);
     res.sendStatus(204);
   } catch (e) {
     res.sendStatus(500);
   }
 });
 
-/**
- * Given a Discord UserId, push static make-believe data to the Discord
- * metadata endpoint.
- */
-async function getMetadata(userId) {
-  const scoutId = await storage.getLinkedScoutIDUserId(userId);
-  if (!scoutId) {
-    console.log(
-      `No linked ScoutID user for Discord user ${userId}, skipping metadata update`
-    );
-    return;
+// --- Discord interactions (slash commands) ---
+
+const ADMIN_PERMISSION = BigInt(0x8);
+
+app.post(
+  "/interactions",
+  express.raw({ type: "application/json" }),
+  async (req, res) => {
+    const signature = req.headers["x-signature-ed25519"];
+    const timestamp = req.headers["x-signature-timestamp"];
+    const rawBody = req.body.toString();
+
+    if (
+      !discord.verifyInteraction(
+        config.DISCORD_PUBLIC_KEY,
+        signature,
+        timestamp,
+        rawBody
+      )
+    ) {
+      return res.sendStatus(401);
+    }
+
+    const interaction = JSON.parse(rawBody);
+
+    // Discord PING verification
+    if (interaction.type === 1) {
+      return res.json({ type: 1 });
+    }
+
+    // Slash command
+    if (
+      interaction.type === 2 &&
+      interaction.data.name === "refresh-scoutid"
+    ) {
+      // Respond with deferred message (type 5), then process in background
+      res.json({ type: 5 });
+      setTimeout(
+        () => handleRefreshCommand(interaction).catch(console.error),
+        1000
+      );
+      return;
+    }
+
+    res.sendStatus(400);
   }
-  const scoutIDTokens = await storage.getScoutIDTokens(scoutId);
+);
+
+async function handleRefreshCommand(interaction) {
+  const guildId = interaction.guild_id;
+  const token = interaction.token;
+  const callerId = interaction.member.user.id;
+  const callerPermissions = BigInt(interaction.member.permissions);
+  const isAdmin = (callerPermissions & ADMIN_PERMISSION) === ADMIN_PERMISSION;
+
+  const personOption = interaction.data.options?.find(
+    (o) => o.name === "person"
+  );
+  const allOption = interaction.data.options?.find((o) => o.name === "alla");
+
+  try {
+    if (allOption?.value === true) {
+      // Refresh all users - admin only
+      if (!isAdmin) {
+        await discord.editInteractionResponse(
+          token,
+          "Du måste vara admin för att uppdatera alla."
+        );
+        return;
+      }
+
+      const results = await roles.syncAllUserRoles(guildId);
+      const lines = results.map((r) => {
+        if (r.error) return `- <@${r.discordUserId}>: ${r.error}`;
+        return `- <@${r.discordUserId}>: ${formatChanges(r)}`;
+      });
+
+      const message =
+        lines.length > 0
+          ? `Uppdaterade ${results.length} användare:\n${lines.join("\n")}`
+          : "Inga länkade användare hittades.";
+
+      // Discord 2000 char limit
+      const truncated =
+        message.length > 2000 ? message.substring(0, 1997) + "..." : message;
+      await discord.editInteractionResponse(token, truncated);
+    } else if (personOption) {
+      // Refresh specific person
+      const targetUserId = personOption.value;
+
+      if (targetUserId !== callerId && !isAdmin) {
+        await discord.editInteractionResponse(
+          token,
+          "Du måste vara admin för att uppdatera andra."
+        );
+        return;
+      }
+
+      await storage.clearScoutNetCache();
+      const result = await roles.syncUserRoles(guildId, targetUserId);
+
+      if (result.error) {
+        await discord.editInteractionResponse(
+          token,
+          `<@${targetUserId}>: ${result.error}`
+        );
+      } else {
+        await discord.editInteractionResponse(
+          token,
+          `<@${targetUserId}>: ${formatChanges(result)}`
+        );
+      }
+    } else {
+      // No arguments - refresh yourself
+      await storage.clearScoutNetCache();
+      const result = await roles.syncUserRoles(guildId, callerId);
+
+      if (result.error) {
+        await discord.editInteractionResponse(
+          token,
+          `<@${callerId}>: ${result.error}`
+        );
+      } else {
+        await discord.editInteractionResponse(
+          token,
+          `<@${callerId}>: ${formatChanges(result)}`
+        );
+      }
+    }
+  } catch (e) {
+    console.error("Error handling refresh command:", e);
+    await discord.editInteractionResponse(token, `Fel: ${e.message}`);
+  }
+}
+
+function formatChanges({ added, removed }) {
+  const parts = [];
+  if (added?.length > 0) parts.push(`Lade till: ${added.join(", ")}`);
+  if (removed?.length > 0) parts.push(`Tog bort: ${removed.join(", ")}`);
+  if (parts.length === 0) return "Inga ändringar";
+  return parts.join(". ");
+}
+
+// --- Helper functions ---
+
+async function updateMetadata(discordUserId) {
+  const scoutId = await storage.getLinkedScoutIDUserId(discordUserId);
+  if (!scoutId) return;
 
   let metadata = {};
   try {
-    const scoutIDdata = await scoutid.getUserData(scoutIDTokens);
-
+    const scoutIDTokens = await storage.getScoutIDTokens(scoutId);
+    const scoutIDData = await scoutid.getUserData(scoutIDTokens);
     metadata = {
-      scoutid: scoutIDdata.scoutid,
-      email: scoutIDdata.email,
-      name: scoutIDdata.name,
+      scoutid: scoutIDData.scoutid,
+      email: scoutIDData.email,
+      name: scoutIDData.name,
     };
   } catch (e) {
-    e.message = `Error fetching external data: ${e.message}`;
-    console.error(e);
-    // If fetching the profile data for the external service fails for any reason,
-    // ensure metadata on the Discord side is nulled out. This prevents cases
-    // where the user revokes an external app permissions, and is left with
-    // stale linked role data.
-    metadata = {};
+    console.error(`Error fetching ScoutID data: ${e.message}`);
   }
-  return metadata;
+
+  const discordTokens = await storage.getDiscordTokens(discordUserId);
+  await discord.pushMetadata(discordUserId, discordTokens, metadata);
 }
 
-/**
- * Given a Discord UserId, push static make-believe data to the Discord
- * metadata endpoint.
- */
-async function updateMetadata(userId, metadata) {
-  // Fetch the tokens from storage
-  const discordTokens = await storage.getDiscordTokens(userId);
-
-  console.log(
-    `Pushing metadata ${JSON.stringify(metadata)} for user ${userId}`
-  );
-
-  // Push the data to Discord.
-  await discord.pushMetadata(userId, discordTokens, metadata);
-}
-
-/**
- * Update a Discord user's nickname to their ScoutID name.
- * This will attempt to update the nickname in all guilds where:
- * 1. The user is a member
- * 2. The bot is present and has "Manage Nicknames" permission
- */
 async function updateNickname(userId, nickname) {
   try {
-    if (nickname.length > 32) {
-      nickname = nickname.substring(0, 32);
-    }
+    if (nickname.length > 32) nickname = nickname.substring(0, 32);
 
-    console.log(
-      `Updating nickname for Discord user ${userId} to "${nickname}"`
-    );
-
-    // Get Discord user tokens to fetch their guilds
-    const discordTokens = await storage.getDiscordTokens(userId);
-    if (!discordTokens) {
-      console.log(
-        `No Discord tokens found for user ${userId}, skipping nickname update`
-      );
-      return;
-    }
-
-    try {
-      const userGuilds = [];
-      // Get the guilds the user is a member of
-      if (config.DISCORD_GUILD_ID) {
-        userGuilds.push({
-          id: config.DISCORD_GUILD_ID,
-          name: "Configured Guild",
-        });
-      } else {
-        userGuilds.push(...(await discord.getUserGuilds(discordTokens)));
+    const guildId = config.DISCORD_GUILD_ID;
+    if (guildId) {
+      await discord.updateGuildMemberNickname(guildId, userId, nickname);
+    } else {
+      const discordTokens = await storage.getDiscordTokens(userId);
+      if (!discordTokens) return;
+      const guilds = await discord.getUserGuilds(discordTokens);
+      for (const guild of guilds) {
+        await discord.updateGuildMemberNickname(guild.id, userId, nickname);
       }
-      console.log(`User ${userId} is a member of ${userGuilds.length} guilds`);
-
-      // Attempt to update nickname in each guild
-      let successCount = 0;
-      for (const guild of userGuilds) {
-        try {
-          const success = await discord.updateGuildMemberNickname(
-            guild.id,
-            userId,
-            nickname
-          );
-          if (success) successCount++;
-        } catch (e) {
-          // Bot might not be in this guild, or other permission issues
-          console.log(
-            `Cannot update nickname in guild ${guild.id} (${guild.name}): ${e.message}`
-          );
-        }
-      }
-
-      console.log(
-        `Successfully updated nickname in ${successCount} out of ${userGuilds.length} guilds`
-      );
-    } catch (e) {
-      console.error(`Error fetching user guilds for ${userId}:`, e.message);
     }
   } catch (e) {
-    console.error(`Error updating nickname for user ${userId}:`, e);
+    console.error(`Error updating nickname for ${userId}:`, e.message);
   }
 }
 
-/**
- * Add the roles to a Discord user in all applicable guilds.
- * This will attempt to add the role in all guilds where:
- * 1. The user is a member
- * 2. The bot is present and has "Manage Roles" permission
- * 3. The roles exists
- */
-async function addDiscordRoles(userId, roles) {
+async function addDiscordRoles(userId, roleNames) {
   try {
-    console.log(
-      `Adding roles ${JSON.stringify(roles)} for Discord user ${userId}`
-    );
+    const guildId = config.DISCORD_GUILD_ID;
+    if (!guildId) return;
 
-    // Get Discord user tokens to fetch their guilds
-    const discordTokens = await storage.getDiscordTokens(userId);
-    if (!discordTokens) {
-      console.log(
-        `No Discord tokens found for user ${userId}, skipping WSJ role assignment`
-      );
-      return;
+    const guildRoles = await discord.getGuildRoles(guildId);
+    const roleMap = new Map();
+    for (const role of guildRoles) {
+      roleMap.set(role.name.toLowerCase(), role);
     }
 
-    try {
-      const userGuilds = [];
-      if (config.DISCORD_GUILD_ID) {
-        userGuilds.push({
-          id: config.DISCORD_GUILD_ID,
-          name: "Configured Guild",
-        });
-      } else {
-        userGuilds.push(...(await discord.getUserGuilds(discordTokens)));
-      }
-      console.log(
-        `User ${userId} is a member of ${userGuilds.length} guilds for role assignment`
-      );
-
-      // Attempt to add roles in each guild
-      let successCount = 0;
-      for (const guild of userGuilds) {
+    console.log(`Assigning roles [${roleNames.join(", ")}] to user ${userId}`);
+    for (const roleName of roleNames) {
+      const role = roleMap.get(roleName.toLowerCase());
+      if (role) {
         try {
-          const success = await discord.addRolesToUser(guild.id, userId, roles);
-          if (success) successCount++;
+          await discord.addRoleToUser(guildId, userId, role.id);
+          console.log(`Added role "${roleName}" (${role.id}) to user ${userId}`);
         } catch (e) {
-          // Bot might not be in this guild, or other permission issues
-          console.log(
-            `Cannot add WSJ role in guild ${guild.id} (${guild.name}): ${e.message}`
+          console.error(
+            `Failed to add role "${roleName}" (${role.id}) to user ${userId}: ${e.message} (bot role may be too low in hierarchy)`
           );
         }
+      } else {
+        console.warn(`Role "${roleName}" not found in guild — create it in Discord`);
       }
-
-      console.log(
-        `Successfully added roles in ${successCount} out of ${userGuilds.length} guilds`
-      );
-    } catch (e) {
-      console.error(
-        `Error fetching user guilds for role assignment for ${userId}:`,
-        e.message
-      );
     }
   } catch (e) {
-    console.error(`Error adding roles for user ${userId}:`, e);
+    console.error(`Error adding roles for ${userId}:`, e.message);
   }
 }
 
