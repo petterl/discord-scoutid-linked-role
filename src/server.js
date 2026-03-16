@@ -204,6 +204,12 @@ async function handleRefreshCommand(interaction) {
         return;
       }
 
+      const linkedUsers = await storage.getAllLinkedUsers();
+      console.log(
+        `Found ${linkedUsers.length} linked users:`,
+        linkedUsers.map((u) => `${u.discordUserId} -> ${u.scoutId}`)
+      );
+
       const results = await roles.syncAllUserRoles(guildId);
       const lines = results.map((r) => {
         if (r.error) return `- <@${r.discordUserId}>: ${r.error}`;
