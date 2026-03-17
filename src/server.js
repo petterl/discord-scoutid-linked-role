@@ -109,9 +109,10 @@ app.get("/scoutid-oauth-callback", async (req, res) => {
       console.error(`Error assigning roles for ${discordUserId}:`, e.message);
     }
 
-    // Update nickname
+    // Update nickname with role suffix
     if (scoutIDUser.name) {
-      await updateNickname(discordUserId, scoutIDUser.name);
+      const suffix = await roles.getNicknameSuffix(scoutIDUser.scoutid);
+      await updateNickname(discordUserId, scoutIDUser.name + suffix);
     }
 
     res.send(getSuccessPageHTML());

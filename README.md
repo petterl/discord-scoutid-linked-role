@@ -8,19 +8,20 @@ A Discord bot that links Discord accounts to ScoutID and automatically assigns r
 2. **Event roles** - If `SCOUTNET_EVENT_ID` is configured, the bot checks if the user is registered in that event and assigns an event role.
 3. **Fee-based roles** - Maps the participant's fee category to a Discord role. Categories with a division config get division-specific roles (e.g. `Deltagare-02`, `IST-Patrull-05`), others get a waiting role (e.g. `Deltagare-Väntande`) or a static role (e.g. `IST-Direktresa`, `cmt`).
 4. **Division roles** - Each fee category can have its own ScoutNet question for division assignment, with separate role patterns for "has division" and "no division yet".
-5. **Slash command** - `/refresh-scoutid` lets users refresh their own roles. Admins can refresh other users or all linked users at once.
+5. **Nickname suffix** - Appends role/division info to the user's name, e.g. `Petter Sandholdt (CMT)`, `Ida Sandholdt (12)`, `Erik Reiner (AL12)`, `Per Persson (IST-17)`. Updated on link and refresh.
+6. **Slash command** - `/refresh-scoutid` lets users refresh their own roles and nickname. Admins can refresh other users or all linked users at once.
 
 ## Role assignment logic
 
 Fee categories and their role patterns:
 
-| Fee ID | Category | Division question | With division | Without division |
-|--------|----------|-------------------|---------------|------------------|
-| 25694, 27561 | deltagare | 88168 | `Deltagare-{div}` | `Deltagare-Väntande` |
-| 25696 | ist | 88168 | `IST-Patrull-{div}` | `IST-Väntande` |
-| 25702 | IST-Direktresa | — | `IST-Direktresa` | — |
-| 33293, 34850 | ledare | 107592 | `Ledare-{div}` | `Ledare-Väntande` |
-| 25697, 25693 | cmt | — | `cmt` | — |
+| Fee ID       | Category       | Division question | With division       | Without division     |
+| ------------ | -------------- | ----------------- | ------------------- | -------------------- |
+| 25694, 27561 | deltagare      | 88168             | `Deltagare-{div}`   | `Deltagare-Väntande` |
+| 25696        | ist            | 88168             | `IST-Patrull-{div}` | `IST-Väntande`       |
+| 25702        | IST-Direktresa | —                 | `IST-Direktresa`    | —                    |
+| 33293, 34850 | ledare         | 107592            | `Ledare-{div}`      | `Ledare-Väntande`    |
+| 25697, 25693 | cmt            | —                 | `cmt`               | —                    |
 
 Division numbers are zero-padded to minimum 2 digits (e.g. `3` → `03`, `100` → `100`).
 
@@ -47,6 +48,7 @@ src/
 ### 1. Create a Discord app
 
 Create an app at https://discord.com/developers/applications with the `bot` scope. You need:
+
 - Bot token (`DISCORD_TOKEN`)
 - Client ID (`DISCORD_CLIENT_ID`), secret, public key
 - The bot needs **Manage Roles** and **Manage Nicknames** permissions
@@ -80,15 +82,15 @@ docker run --rm --env-file .env acrwsj27prodsec.azurecr.io/discord-scoutid-linke
 
 ### 6. Discord server role hierarchy
 
-In Server Settings → Roles, make sure the bot's role ("ScoutID bot") is **above** all the roles it needs to assign (Scout, Deltagare-*, IST-*, Ledare-*, cmt, etc.).
+In Server Settings → Roles, make sure the bot's role ("ScoutID bot") is **above** all the roles it needs to assign (Scout, Deltagare-_, IST-_, Ledare-\*, cmt, etc.).
 
 ## Slash command: `/refresh-scoutid`
 
-| Usage | Who can run | What it does |
-|-------|-------------|-------------|
-| `/refresh-scoutid` | Everyone | Refreshes your own roles |
-| `/refresh-scoutid person:@user` | Admins | Refreshes that user's roles |
-| `/refresh-scoutid alla:true` | Admins | Refreshes all linked users |
+| Usage                           | Who can run | What it does                |
+| ------------------------------- | ----------- | --------------------------- |
+| `/refresh-scoutid`              | Everyone    | Refreshes your own roles    |
+| `/refresh-scoutid person:@user` | Admins      | Refreshes that user's roles |
+| `/refresh-scoutid alla:true`    | Admins      | Refreshes all linked users  |
 
 The command shows what roles were added or removed.
 
@@ -115,8 +117,8 @@ docker push acrwsj27prodsec.azurecr.io/discord-scoutid-linked-role:latest
 ```bash
 cd terraform
 terraform init              # first time only
-terraform plan -var-file="secrets.tfvars"
-terraform apply -var-file="secrets.tfvars"
+terraform plan -var-file="secrets.tfvars" -var-file "terraform.tfvars"
+terraform apply -var-file="secrets.tfvars" -var-file "terraform.tfvars"
 ```
 
 ### Update a running deployment

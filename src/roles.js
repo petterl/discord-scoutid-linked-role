@@ -14,7 +14,36 @@ import * as storage from "./storage.js";
  * Division roles use per-category question IDs:
  *   deltagare uses q88168, ledare uses q107592, etc.
  *   Categories without a division config use the category name as the role.
+ *
+ * Nickname suffix:
+ *   Appended to the user's real name, e.g. "Petter Sandholdt (CMT)".
+ *   Configured via SCOUTNET_NICKNAME_SUFFIXES.
  */
+
+/**
+ * Get participant's fee category and division from ScoutNet.
+ * Returns { category, division } or null if not in event.
+ */
+async function getParticipantInfo(scoutnetMemberId) {
+  if (!config.SCOUTNET_EVENT_ID) return null;
+
+  const participant = await scoutnet.getParticipant(scoutnetMemberId);
+  if (!participant || participant.cancelled_date != null) return null;
+
+  const category =
+    config.SCOUTNET_FEE_ROLES && participant.fee_id
+      ? config.SCOUTNET_FEE_ROLES[String(participant.fee_id)]
+      : null;
+
+  const divConfig = category
+    ? config.SCOUTNET_DIVISION_ROLES?.[category]
+    : null;
+  const division = divConfig
+    ? participant.questions?.[divConfig.questionId] || null
+    : null;
+
+  return { category, division };
+}
 
 /**
  * Determine which roles a user should have.
@@ -22,33 +51,23 @@ import * as storage from "./storage.js";
 export async function getDesiredRoles(scoutnetMemberId) {
   const roles = [config.SCOUTNET_SCOUT_ROLE];
 
-  if (!config.SCOUTNET_EVENT_ID) return roles;
-
   try {
-    const participant = await scoutnet.getParticipant(scoutnetMemberId);
-    if (!participant || participant.cancelled_date != null) return roles;
+    const info = await getParticipantInfo(scoutnetMemberId);
+    if (!info) return roles;
 
-    // Registered and not cancelled → event role
     roles.push(config.SCOUTNET_EVENT_ROLE);
 
-    // Fee-based role with optional division
-    if (config.SCOUTNET_FEE_ROLES && participant.fee_id) {
-      const category = config.SCOUTNET_FEE_ROLES[String(participant.fee_id)];
-      if (category) {
-        const divConfig = config.SCOUTNET_DIVISION_ROLES?.[category];
-        if (divConfig) {
-          const division =
-            participant.questions?.[divConfig.questionId];
-          if (division) {
-            const padded = String(division).padStart(2, "0");
-            roles.push(divConfig.withDiv.replace("{div}", padded));
-          } else {
-            roles.push(divConfig.withoutDiv);
-          }
+    if (info.category) {
+      const divConfig = config.SCOUTNET_DIVISION_ROLES?.[info.category];
+      if (divConfig) {
+        if (info.division) {
+          const padded = String(info.division).padStart(2, "0");
+          roles.push(divConfig.withDiv.replace("{div}", padded));
         } else {
-          // No division config → use category name as role
-          roles.push(category);
+          roles.push(divConfig.withoutDiv);
         }
+      } else {
+        roles.push(info.category);
       }
     }
   } catch (e) {
@@ -59,6 +78,40 @@ export async function getDesiredRoles(scoutnetMemberId) {
   }
 
   return roles;
+}
+
+/**
+ * Get the nickname suffix for a user based on their ScoutNet data.
+ * E.g. " (CMT)", " (AL12)", " (IST-05)", " (03)".
+ * Returns empty string if no suffix applies.
+ */
+export async function getNicknameSuffix(scoutnetMemberId) {
+  if (!config.SCOUTNET_NICKNAME_SUFFIXES) return "";
+
+  try {
+    const info = await getParticipantInfo(scoutnetMemberId);
+    if (!info?.category) return "";
+
+    const suffixConfig = config.SCOUTNET_NICKNAME_SUFFIXES[info.category];
+    if (!suffixConfig) return "";
+
+    if (info.division && suffixConfig.withDiv) {
+      const padded = String(info.division).padStart(2, "0");
+      return ` (${suffixConfig.withDiv.replace("{div}", padded)})`;
+    }
+
+    if (suffixConfig.withoutDiv) {
+      return ` (${suffixConfig.withoutDiv})`;
+    }
+
+    return "";
+  } catch (e) {
+    console.error(
+      `Error getting nickname suffix for member ${scoutnetMemberId}:`,
+      e.message
+    );
+    return "";
+  }
 }
 
 /**
@@ -107,6 +160,23 @@ function getDivisionPrefixes() {
 export async function syncUserRoles(guildId, discordUserId) {
   const scoutId = await storage.getLinkedScoutIDUserId(discordUserId);
   if (!scoutId) return { error: "Inte länkad till ScoutID" };
+
+  // Update nickname with suffix
+  try {
+    const member = await discord.getGuildMember(guildId, discordUserId);
+    const suffix = await getNicknameSuffix(scoutId);
+    const currentNick = member.nick || member.user?.global_name || "";
+    // Strip any existing suffix in parentheses and reapply
+    const baseName = currentNick.replace(/\s*\(.*\)\s*$/, "");
+    if (baseName) {
+      const newNick = (baseName + suffix).substring(0, 32);
+      if (newNick !== currentNick) {
+        await discord.updateGuildMemberNickname(guildId, discordUserId, newNick);
+      }
+    }
+  } catch (e) {
+    console.error(`Error updating nickname for ${discordUserId}:`, e.message);
+  }
 
   const desiredRoles = await getDesiredRoles(scoutId);
   const managedRoles = getManagedRoleNames();

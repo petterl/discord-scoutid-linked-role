@@ -1,3 +1,13 @@
+variable "subscription_id" {
+  description = "Azure subscription ID"
+  type        = string
+}
+
+variable "tenant_id" {
+  description = "Azure tenant ID"
+  type        = string
+}
+
 variable "project_name" {
   description = "Name of the project, used as prefix for all resources"
   type        = string
@@ -141,6 +151,12 @@ variable "scoutnet_fee_roles" {
 
 variable "scoutnet_division_roles" {
   description = "Division role patterns per category (format: category:questionId:withDiv:withoutDiv,...)"
+  type        = string
+  default     = ""
+}
+
+variable "scoutnet_nickname_suffixes" {
+  description = "Nickname suffix per category (format: category:withDiv:withoutDiv,...)"
   type        = string
   default     = ""
 }

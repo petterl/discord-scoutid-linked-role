@@ -40,6 +40,12 @@ docker run --rm --env-file .env acrwsj27prodsec.azurecr.io/discord-scoutid-linke
 - Each participant has: `fee_id`, `cancelled_date`, `questions` (object of questionId → answer)
 - Participant data is cached in Redis for 10 minutes
 
+## Discord Developer Portal
+
+- **General Information** → Linked Roles Verification URL: `https://discord-scoutid.wsj27.scouterna.net/linked-role`
+- **General Information** → Interactions Endpoint URL: `https://discord-scoutid.wsj27.scouterna.net/interactions`
+- **OAuth2** → Redirect: `https://discord-scoutid.wsj27.scouterna.net/discord-oauth-callback`
+
 ## Config format reference
 
 ```
@@ -48,4 +54,7 @@ SCOUTNET_FEE_ROLES=25694:deltagare,27561:deltagare,...
 
 # category:questionId:roleWithDiv:roleWithoutDiv
 SCOUTNET_DIVISION_ROLES=deltagare:88168:Deltagare-{div}:Deltagare-Väntande,...
+
+# category:suffixWithDiv:suffixWithoutDiv (empty = no suffix)
+SCOUTNET_NICKNAME_SUFFIXES=deltagare:{div}:,ledare:AL{div}:AL,ist:IST-{div}:IST,IST-Direktresa::IST,cmt::CMT
 ```

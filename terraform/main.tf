@@ -3,13 +3,15 @@ terraform {
   required_providers {
     azurerm = {
       source  = "hashicorp/azurerm"
-      version = "~> 3.0"
+      version = "~> 4.0"
     }
   }
 }
 
 provider "azurerm" {
   features {}
+  subscription_id = var.subscription_id
+  tenant_id       = var.tenant_id
 }
 
 # Resource Group
@@ -31,6 +33,7 @@ resource "azurerm_redis_cache" "main" {
   minimum_tls_version  = "1.2"
 
   redis_configuration {
+    data_persistence_authentication_method = "SAS"
   }
 
   tags = var.tags
@@ -63,6 +66,7 @@ resource "azurerm_container_app" "main" {
   resource_group_name          = azurerm_resource_group.main.name
   revision_mode                = "Single"
   tags                         = var.tags
+  max_inactive_revisions       = 2
 
   template {
     min_replicas = var.min_replicas
@@ -167,6 +171,11 @@ resource "azurerm_container_app" "main" {
       env {
         name  = "SCOUTNET_DIVISION_ROLES"
         value = var.scoutnet_division_roles
+      }
+
+      env {
+        name  = "SCOUTNET_NICKNAME_SUFFIXES"
+        value = var.scoutnet_nickname_suffixes
       }
     }
   }

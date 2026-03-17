@@ -17,6 +17,26 @@ function parseFeeRoles(str) {
 }
 
 /**
+ * Parse nickname suffix patterns from env var.
+ * Format: "category:withDiv:withoutDiv,..."
+ * Example: "deltagare:{div}:,ledare:AL{div}:AL,ist:IST-{div}:IST,IST-Direktresa::IST,cmt::CMT"
+ *
+ * {div} is replaced with the zero-padded division number.
+ * Empty string means no suffix for that case.
+ */
+function parseNicknameSuffixes(str) {
+  if (!str) return null;
+  const map = {};
+  for (const entry of str.split(",")) {
+    const parts = entry.split(":").map((s) => s.trim());
+    if (parts.length === 3) {
+      map[parts[0]] = { withDiv: parts[1], withoutDiv: parts[2] };
+    }
+  }
+  return Object.keys(map).length > 0 ? map : null;
+}
+
+/**
  * Parse division role patterns from env var.
  * Format: "category:questionId:withDivPattern:withoutDivRole,..."
  * Example: "deltagare:88168:Deltagare-{div}:Deltagare-Väntande,ledare:107592:Ledare-{div}:Ledare-Väntande"
@@ -66,6 +86,9 @@ const config = {
   SCOUTNET_FEE_ROLES: parseFeeRoles(process.env.SCOUTNET_FEE_ROLES),
   SCOUTNET_DIVISION_ROLES: parseDivisionRoles(
     process.env.SCOUTNET_DIVISION_ROLES
+  ),
+  SCOUTNET_NICKNAME_SUFFIXES: parseNicknameSuffixes(
+    process.env.SCOUTNET_NICKNAME_SUFFIXES
   ),
 
   // General
