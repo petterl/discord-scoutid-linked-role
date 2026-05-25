@@ -340,7 +340,7 @@ async function handleStatusCommand(interaction) {
               ? participant.questions?.[divConfig.questionId] || null
               : null;
             lines.push(
-              `📋 ScoutNet: fee_id=${participant.fee_id}, kategori=${category}, patrull=${division ?? "(saknas)"}`,
+              `📋 ScoutNet: fee_id=${participant.fee_id}, kategori=${category}, avdelning=${division ?? "(saknas)"}`,
             );
           }
         } catch (e) {
