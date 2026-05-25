@@ -182,6 +182,30 @@ export async function getGuildRoles(guildId) {
   });
 }
 
+export async function getGuildMembers(guildId) {
+  const members = [];
+  let after = "0";
+  while (true) {
+    const url = `https://discord.com/api/v10/guilds/${guildId}/members?limit=1000&after=${after}`;
+    const page = await retryWithBackoff(async () => {
+      const response = await fetch(url, {
+        headers: { Authorization: `Bot ${config.DISCORD_TOKEN}` },
+      });
+      if (response.ok) return await response.json();
+      const error = new Error(
+        `Error fetching guild members: [${response.status}]`,
+      );
+      error.status = response.status;
+      throw error;
+    });
+    if (!page.length) break;
+    members.push(...page);
+    if (page.length < 1000) break;
+    after = page[page.length - 1].user.id;
+  }
+  return members;
+}
+
 export async function getGuildMember(guildId, userId) {
   const url = `https://discord.com/api/v10/guilds/${guildId}/members/${userId}`;
   return await retryWithBackoff(async () => {
@@ -306,6 +330,70 @@ export async function registerStatusCommand(guildId) {
   });
 }
 
+export async function registerAuditCommand(guildId) {
+  const url = `https://discord.com/api/v10/applications/${config.DISCORD_CLIENT_ID}/guilds/${guildId}/commands`;
+  const command = {
+    name: "audit-scoutid",
+    description: "Lista avvikelser mellan Discord, ScoutID-länkar och ScoutNet (admin)",
+    default_member_permissions: "8", // ADMINISTRATOR
+  };
+
+  return await retryWithBackoff(async () => {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        Authorization: `Bot ${config.DISCORD_TOKEN}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(command),
+    });
+    if (response.ok) return await response.json();
+    const errorText = await response.text();
+    throw new Error(
+      `Error registering command: [${response.status}] ${errorText}`,
+    );
+  });
+}
+
+export async function registerLinkCommand(guildId) {
+  const url = `https://discord.com/api/v10/applications/${config.DISCORD_CLIENT_ID}/guilds/${guildId}/commands`;
+  const command = {
+    name: "link-scoutid",
+    description: "Länka manuellt en Discord-användare till ett ScoutNet member_no (admin)",
+    default_member_permissions: "8", // ADMINISTRATOR
+    options: [
+      {
+        name: "person",
+        description: "Discord-användare att länka",
+        type: 6, // USER
+        required: true,
+      },
+      {
+        name: "scoutid",
+        description: "ScoutNet member_no",
+        type: 3, // STRING
+        required: true,
+      },
+    ],
+  };
+
+  return await retryWithBackoff(async () => {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        Authorization: `Bot ${config.DISCORD_TOKEN}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(command),
+    });
+    if (response.ok) return await response.json();
+    const errorText = await response.text();
+    throw new Error(
+      `Error registering command: [${response.status}] ${errorText}`,
+    );
+  });
+}
+
 // --- Interaction verification ---
 
 export function verifyInteraction(publicKey, signature, timestamp, body) {
@@ -339,6 +427,40 @@ export async function editInteractionResponse(interactionToken, content) {
     if (!response.ok) {
       const error = new Error(
         `Error editing interaction response: [${response.status}]`,
+      );
+      error.status = response.status;
+      throw error;
+    }
+    return true;
+  });
+}
+
+export async function editInteractionResponseWithFile(
+  interactionToken,
+  content,
+  filename,
+  fileContent,
+) {
+  const url = `https://discord.com/api/v10/webhooks/${config.DISCORD_CLIENT_ID}/${interactionToken}/messages/@original`;
+  const form = new FormData();
+  form.append(
+    "payload_json",
+    JSON.stringify({
+      content,
+      attachments: [{ id: 0, filename }],
+    }),
+  );
+  form.append(
+    "files[0]",
+    new Blob([fileContent], { type: "text/plain" }),
+    filename,
+  );
+
+  return await retryWithBackoff(async () => {
+    const response = await fetch(url, { method: "PATCH", body: form });
+    if (!response.ok) {
+      const error = new Error(
+        `Error editing interaction response with file: [${response.status}]`,
       );
       error.status = response.status;
       throw error;

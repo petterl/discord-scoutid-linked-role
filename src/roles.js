@@ -161,13 +161,22 @@ export async function syncUserRoles(guildId, discordUserId) {
   const scoutId = await storage.getLinkedScoutIDUserId(discordUserId);
   if (!scoutId) return { error: "Inte länkad till ScoutID" };
 
-  // Update nickname with suffix
+  // Update nickname from ScoutNet name + suffix
   try {
     const member = await discord.getGuildMember(guildId, discordUserId);
     const suffix = await getNicknameSuffix(scoutId);
     const currentNick = member.nick || member.user?.global_name || "";
-    // Strip any existing suffix in parentheses and reapply
-    const baseName = currentNick.replace(/\s*\(.*\)\s*$/, "");
+
+    const participant = await scoutnet.getParticipant(scoutId);
+    const scoutNetName = participant
+      ? [participant.first_name, participant.last_name]
+          .filter(Boolean)
+          .join(" ")
+          .trim()
+      : "";
+    const baseName =
+      scoutNetName || currentNick.replace(/\s*\(.*\)\s*$/, "");
+
     if (baseName) {
       const newNick = (baseName + suffix).substring(0, 32);
       if (newNick !== currentNick) {

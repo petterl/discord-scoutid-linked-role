@@ -184,6 +184,24 @@ app.post(
       return;
     }
 
+    if (interaction.type === 2 && interaction.data.name === "audit-scoutid") {
+      res.json({ type: 5, data: { flags: 64 } });
+      setTimeout(
+        () => handleAuditCommand(interaction).catch(console.error),
+        1000,
+      );
+      return;
+    }
+
+    if (interaction.type === 2 && interaction.data.name === "link-scoutid") {
+      res.json({ type: 5, data: { flags: 64 } });
+      setTimeout(
+        () => handleLinkCommand(interaction).catch(console.error),
+        1000,
+      );
+      return;
+    }
+
     res.sendStatus(400);
   },
 );
@@ -386,6 +404,249 @@ async function handleStatusCommand(interaction) {
     console.error("Error handling status command:", e);
     await discord.editInteractionResponse(token, `Fel: ${e.message}`);
   }
+}
+
+async function handleAuditCommand(interaction) {
+  const guildId = interaction.guild_id;
+  const token = interaction.token;
+  const callerPermissions = BigInt(interaction.member.permissions);
+  const isAdmin = (callerPermissions & ADMIN_PERMISSION) === ADMIN_PERMISSION;
+
+  if (!isAdmin) {
+    await discord.editInteractionResponse(
+      token,
+      "Du måste vara admin för att använda det här kommandot.",
+    );
+    return;
+  }
+
+  try {
+    const [guildMembers, guildRoles, linkedUsers, participants] =
+      await Promise.all([
+        discord.getGuildMembers(guildId),
+        discord.getGuildRoles(guildId),
+        storage.getAllLinkedUsers(),
+        config.SCOUTNET_EVENT_ID ? scoutnet.getParticipants() : null,
+      ]);
+
+    const scoutRoleName = config.SCOUTNET_SCOUT_ROLE;
+    const scoutRole = guildRoles.find(
+      (r) => r.name.toLowerCase() === scoutRoleName.toLowerCase(),
+    );
+
+    const linkedMap = new Map(
+      linkedUsers.map((u) => [u.discordUserId, u.scoutId]),
+    );
+    const memberMap = new Map(guildMembers.map((m) => [m.user.id, m]));
+
+    const lines = [];
+    lines.push("**Audit-rapport för ScoutID-länkningar**");
+    lines.push(
+      `Guild-medlemmar: ${guildMembers.length} · Länkade i storage: ${linkedUsers.length}`,
+    );
+    lines.push("");
+
+    // Category 1: has Scout role but no storage link
+    lines.push(
+      `__1. Har \`${scoutRoleName}\`-rollen men ingen storage-länk__`,
+    );
+    if (!scoutRole) {
+      lines.push(
+        `(Rollen \`${scoutRoleName}\` finns inte i guilden — hoppar över.)`,
+      );
+    } else {
+      const orphans = guildMembers.filter(
+        (m) =>
+          m.roles.includes(scoutRole.id) && !linkedMap.has(m.user.id),
+      );
+      if (orphans.length === 0) {
+        lines.push("(Inga)");
+      } else {
+        for (const m of orphans) {
+          const name = m.nick || m.user.global_name || m.user.username;
+          lines.push(`- <@${m.user.id}> (${name})`);
+        }
+      }
+    }
+    lines.push("");
+
+    // Category 2: storage link but no guild member
+    lines.push("__2. Storage-länk men inte (längre) medlem i guilden__");
+    const stale = linkedUsers.filter((u) => !memberMap.has(u.discordUserId));
+    if (stale.length === 0) {
+      lines.push("(Inga)");
+    } else {
+      for (const u of stale) {
+        lines.push(`- discord=\`${u.discordUserId}\` scoutid=\`${u.scoutId}\``);
+      }
+    }
+    lines.push("");
+
+    // Category 3: linked but cancelled in ScoutNet
+    lines.push("__3. Länkad men avbokad i ScoutNet__");
+    if (!participants) {
+      lines.push("(SCOUTNET_EVENT_ID är inte satt — hoppar över.)");
+    } else {
+      const cancelled = linkedUsers.filter((u) => {
+        const p = participants[u.scoutId];
+        return p && p.cancelled_date != null;
+      });
+      if (cancelled.length === 0) {
+        lines.push("(Inga)");
+      } else {
+        for (const u of cancelled) {
+          const p = participants[u.scoutId];
+          const name =
+            [p.first_name, p.last_name].filter(Boolean).join(" ") || "?";
+          lines.push(
+            `- <@${u.discordUserId}> scoutid=\`${u.scoutId}\` ${name} (avbokad ${p.cancelled_date})`,
+          );
+        }
+      }
+    }
+    lines.push("");
+
+    // Category 4: name mismatch between Discord and ScoutNet
+    lines.push("__4. Möjlig fellänkning — namn matchar inte__");
+    if (!participants) {
+      lines.push("(SCOUTNET_EVENT_ID är inte satt — hoppar över.)");
+    } else {
+      const mismatches = [];
+      for (const u of linkedUsers) {
+        const member = memberMap.get(u.discordUserId);
+        const p = participants[u.scoutId];
+        if (!member || !p || p.cancelled_date != null) continue;
+        if (!p.first_name && !p.last_name) continue;
+
+        const rawDisplay =
+          member.nick || member.user.global_name || member.user.username || "";
+        const displayClean = rawDisplay.replace(/\s*\(.*\)\s*$/, "");
+        const display = normalizeName(displayClean);
+        const first = normalizeName(p.first_name || "");
+        const last = normalizeName(p.last_name || "");
+
+        const firstOk = !first || display.includes(first);
+        const lastOk = !last || display.includes(last);
+        if (firstOk && lastOk) continue;
+
+        mismatches.push(
+          `- <@${u.discordUserId}> scoutid=\`${u.scoutId}\` Discord="${displayClean}" ScoutNet="${[p.first_name, p.last_name].filter(Boolean).join(" ")}"`,
+        );
+      }
+      if (mismatches.length === 0) {
+        lines.push("(Inga)");
+      } else {
+        lines.push(...mismatches);
+      }
+    }
+
+    const message = lines.join("\n");
+    if (message.length <= 2000) {
+      await discord.editInteractionResponse(token, message);
+    } else {
+      await discord.editInteractionResponseWithFile(
+        token,
+        "Audit-rapport (full lista i bifogad fil)",
+        "audit-scoutid.txt",
+        message,
+      );
+    }
+  } catch (e) {
+    console.error("Error handling audit command:", e);
+    await discord.editInteractionResponse(token, `Fel: ${e.message}`);
+  }
+}
+
+async function handleLinkCommand(interaction) {
+  const guildId = interaction.guild_id;
+  const token = interaction.token;
+  const callerPermissions = BigInt(interaction.member.permissions);
+  const isAdmin = (callerPermissions & ADMIN_PERMISSION) === ADMIN_PERMISSION;
+
+  if (!isAdmin) {
+    await discord.editInteractionResponse(
+      token,
+      "Du måste vara admin för att använda det här kommandot.",
+    );
+    return;
+  }
+
+  const targetUserId = interaction.data.options.find(
+    (o) => o.name === "person",
+  ).value;
+  const scoutIdInput = interaction.data.options
+    .find((o) => o.name === "scoutid")
+    .value.trim();
+
+  if (!/^\d+$/.test(scoutIdInput)) {
+    await discord.editInteractionResponse(
+      token,
+      `Ogiltigt scoutid: \`${scoutIdInput}\` — måste vara numeriskt.`,
+    );
+    return;
+  }
+
+  try {
+    const messageParts = [];
+
+    const existing = await storage.getLinkedScoutIDUserId(targetUserId);
+    if (existing === scoutIdInput) {
+      await discord.editInteractionResponse(
+        token,
+        `<@${targetUserId}> är redan länkad till scoutid \`${scoutIdInput}\`.`,
+      );
+      return;
+    }
+    if (existing) {
+      messageParts.push(
+        `⚠️ Var länkad till \`${existing}\`, ersätter med \`${scoutIdInput}\`.`,
+      );
+    }
+
+    let participant = null;
+    if (config.SCOUTNET_EVENT_ID) {
+      try {
+        participant = await scoutnet.getParticipant(scoutIdInput);
+        if (!participant) {
+          messageParts.push(
+            `⚠️ ScoutNet känner inte till member_no \`${scoutIdInput}\` — länkar ändå.`,
+          );
+        } else if (participant.cancelled_date != null) {
+          messageParts.push(
+            `⚠️ ScoutNet-deltagaren är avbokad (${participant.cancelled_date}).`,
+          );
+        }
+      } catch (e) {
+        messageParts.push(`⚠️ Kunde inte slå upp ScoutNet: ${e.message}`);
+      }
+    }
+
+    await storage.setLinkedScoutIDUserId(targetUserId, scoutIdInput);
+    await storage.clearScoutNetCache();
+    const result = await roles.syncUserRoles(guildId, targetUserId);
+
+    if (result.error) {
+      messageParts.push(`Fel vid rolluppdatering: ${result.error}`);
+    } else {
+      messageParts.push(formatChanges(result));
+    }
+
+    await discord.editInteractionResponse(
+      token,
+      `<@${targetUserId}>: Länkad till scoutid \`${scoutIdInput}\`. ${messageParts.join(" ")}`,
+    );
+  } catch (e) {
+    console.error("Error handling link command:", e);
+    await discord.editInteractionResponse(token, `Fel: ${e.message}`);
+  }
+}
+
+function normalizeName(s) {
+  return s
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .toLowerCase()
+    .trim();
 }
 
 function formatChanges({ added, removed }) {
