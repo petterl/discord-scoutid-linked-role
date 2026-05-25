@@ -3,6 +3,8 @@ import * as scoutnet from "./scoutnet.js";
 import * as discord from "./discord.js";
 import * as storage from "./storage.js";
 
+const UNVERIFIED_ROLE = "Overifierad";
+
 /**
  * Role management: determines and syncs Discord roles based on ScoutNet data.
  *
@@ -117,9 +119,12 @@ export async function getNicknameSuffix(scoutnetMemberId) {
 /**
  * All statically known managed role names (for removal logic).
  * Division roles are handled separately via prefix matching.
+ * UNVERIFIED_ROLE is always included so that it's added when needed and
+ * removed when the user is verified.
  */
 function getManagedRoleNames() {
   const roles = new Set();
+  roles.add(UNVERIFIED_ROLE);
   roles.add(config.SCOUTNET_SCOUT_ROLE);
   if (config.SCOUTNET_EVENT_ID) {
     roles.add(config.SCOUTNET_EVENT_ROLE);
@@ -161,13 +166,40 @@ export async function syncUserRoles(guildId, discordUserId) {
   const scoutId = await storage.getLinkedScoutIDUserId(discordUserId);
   if (!scoutId) return { error: "Inte länkad till ScoutID" };
 
+  // Fetch guild + member state once and reuse below
+  const guildRoles = await discord.getGuildRoles(guildId);
+  const roleMap = new Map();
+  for (const role of guildRoles) {
+    roleMap.set(role.name.toLowerCase(), role);
+  }
+  const member = await discord.getGuildMember(guildId, discordUserId);
+  const currentRoleIds = new Set(member.roles);
+
+  // Verification gate: Scout role missing → treat as unverified, strip access
+  const scoutRole = roleMap.get(config.SCOUTNET_SCOUT_ROLE.toLowerCase());
+  const isVerified = scoutRole && currentRoleIds.has(scoutRole.id);
+
+  // Compute desired roles + suffix based on verification state
+  let desiredRoles;
+  let nicknameSuffix;
+  if (isVerified) {
+    desiredRoles = await getDesiredRoles(scoutId);
+    nicknameSuffix = await getNicknameSuffix(scoutId);
+  } else {
+    console.log(
+      `User ${discordUserId} is linked (scoutid=${scoutId}) but lacks Scout role — stripping access`,
+    );
+    desiredRoles = [UNVERIFIED_ROLE];
+    nicknameSuffix = "";
+  }
+  const managedRoles = getManagedRoleNames();
+  const divPrefixes = getDivisionPrefixes();
+  const desiredSet = new Set(desiredRoles.map((r) => r.toLowerCase()));
+
   // Update nickname from ScoutNet name + suffix
   try {
-    const member = await discord.getGuildMember(guildId, discordUserId);
-    const suffix = await getNicknameSuffix(scoutId);
     const currentNick = member.nick || member.user?.global_name || "";
-
-    const participant = await scoutnet.getParticipant(scoutId);
+    const participant = isVerified ? await scoutnet.getParticipant(scoutId) : null;
     const scoutNetName = participant
       ? [participant.first_name, participant.last_name]
           .filter(Boolean)
@@ -178,7 +210,7 @@ export async function syncUserRoles(guildId, discordUserId) {
       scoutNetName || currentNick.replace(/\s*\(.*\)\s*$/, "");
 
     if (baseName) {
-      const newNick = (baseName + suffix).substring(0, 32);
+      const newNick = (baseName + nicknameSuffix).substring(0, 32);
       if (newNick !== currentNick) {
         await discord.updateGuildMemberNickname(guildId, discordUserId, newNick);
       }
@@ -187,29 +219,13 @@ export async function syncUserRoles(guildId, discordUserId) {
     console.error(`Error updating nickname for ${discordUserId}:`, e.message);
   }
 
-  const desiredRoles = await getDesiredRoles(scoutId);
-  const managedRoles = getManagedRoleNames();
-  const divPrefixes = getDivisionPrefixes();
-
-  // Build role name → ID map from the guild
-  const guildRoles = await discord.getGuildRoles(guildId);
-  const roleMap = new Map();
-  for (const role of guildRoles) {
-    roleMap.set(role.name.toLowerCase(), role);
-  }
-
-  // Get member's current role IDs
-  const member = await discord.getGuildMember(guildId, discordUserId);
-  const currentRoleIds = new Set(member.roles);
-  const desiredSet = new Set(desiredRoles.map((r) => r.toLowerCase()));
-
   const added = [];
   const removed = [];
 
   // Add roles the user should have
   for (const roleName of desiredRoles) {
     const role = roleMap.get(roleName.toLowerCase());
-    if (role && !currentRoleIds.has(role.id)) {
+    if (role && !role.managed && !currentRoleIds.has(role.id)) {
       try {
         await discord.addRoleToUser(guildId, discordUserId, role.id);
         added.push(roleName);
@@ -226,6 +242,7 @@ export async function syncUserRoles(guildId, discordUserId) {
     const role = roleMap.get(managedName.toLowerCase());
     if (
       role &&
+      !role.managed &&
       currentRoleIds.has(role.id) &&
       !desiredSet.has(managedName.toLowerCase())
     ) {

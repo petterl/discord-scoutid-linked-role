@@ -102,6 +102,19 @@ export async function runAudit(guildId) {
   const scoutRoleName = config.SCOUTNET_SCOUT_ROLE || SCOUT_ROLE_FALLBACK;
   const scoutRole = roleMap.get(scoutRoleName.toLowerCase());
 
+  const botRoles = botMember
+    ? botMember.roles.map((id) => roleById.get(id)).filter(Boolean)
+    : [];
+  const botHighestPosition = botRoles.reduce(
+    (max, r) => Math.max(max, r.position),
+    0,
+  );
+  // True if the bot can modify this member (member has no role at/above bot)
+  const canBotModify = (member) =>
+    !member.roles.some(
+      (id) => (roleById.get(id)?.position ?? 0) >= botHighestPosition,
+    );
+
   const categories = [];
 
   // --- 1. Has Scout role but no storage link ---
@@ -121,6 +134,32 @@ export async function runAudit(guildId) {
     categories.push({
       id: "scout_role_no_link",
       title: `Har \`${scoutRoleName}\`-rollen men ingen storage-länk`,
+      items,
+    });
+  }
+
+  // --- 1b. Länkade men saknar Scout-rollen ---
+  // Discord Linked Role har fallit bort (avkopplat appen, lämnat servern, metadata-utgång).
+  // Vid nästa /refresh-scoutid får dessa sina roller borttagna och Overifierad satt.
+  {
+    const items = [];
+    if (!scoutRole) {
+      items.push(`(Rollen \`${scoutRoleName}\` finns inte i guilden.)`);
+    } else {
+      for (const u of linkedUsers) {
+        const member = memberMap.get(u.discordUserId);
+        if (!member) continue;
+        if (member.roles.includes(scoutRole.id)) continue;
+        const name = member.nick || member.user.global_name || member.user.username;
+        items.push(
+          `- <@${u.discordUserId}> (${name}) scoutid=\`${u.scoutId}\` — be hen köra \`/linked-role\` igen, eller \`/link-scoutid person:<@${u.discordUserId}> scoutid:${u.scoutId}\``,
+        );
+      }
+    }
+    categories.push({
+      id: "linked_no_scout_role",
+      title:
+        "Länkade men saknar Scout-rollen — får access borttagen vid nästa /refresh-scoutid",
       items,
     });
   }
@@ -242,6 +281,7 @@ export async function runAudit(guildId) {
       const seen = new Map(); // fee_id → count
       for (const p of Object.values(participants)) {
         if (p?.cancelled_date != null) continue;
+        if (p?.fee_id == null) continue;
         const fid = String(p.fee_id);
         if (!config.SCOUTNET_FEE_ROLES[fid]) {
           seen.set(fid, (seen.get(fid) || 0) + 1);
@@ -264,14 +304,6 @@ export async function runAudit(guildId) {
     if (!botMember) {
       items.push("(Kunde inte hämta bot-medlemmen — hoppar över.)");
     } else {
-      const botRoles = botMember.roles
-        .map((id) => roleById.get(id))
-        .filter(Boolean);
-      const botHighestPosition = botRoles.reduce(
-        (max, r) => Math.max(max, r.position),
-        0,
-      );
-
       // Compute managed role names (incl. division roles from data)
       const managedNames = new Set(
         staticManagedRoleNames().map((n) => n.toLowerCase()),
@@ -330,6 +362,8 @@ export async function runAudit(guildId) {
       for (const u of linkedUsers) {
         const member = memberMap.get(u.discordUserId);
         if (!member) continue;
+        // Skip users the bot can't modify (admins/mods above bot) — would be false positives
+        if (botMember && !canBotModify(member)) continue;
         let desired;
         try {
           desired = await roles.getDesiredRoles(u.scoutId);
@@ -343,7 +377,9 @@ export async function runAudit(guildId) {
 
         const missing = desired.filter((n) => {
           const r = roleMap.get(n.toLowerCase());
-          return r && !member.roles.includes(r.id);
+          if (!r) return false;
+          if (r.managed) return false; // managed roles can't be assigned by our bot
+          return !member.roles.includes(r.id);
         });
 
         // For removals we only consider roles the bot manages
@@ -360,6 +396,8 @@ export async function runAudit(guildId) {
         const extra = currentRoleNames.filter((n) => {
           const lower = n.toLowerCase();
           if (desiredLower.has(lower)) return false;
+          const r = roleMap.get(lower);
+          if (r?.managed) return false; // can't remove managed roles
           if (managedStatic.has(lower)) return true;
           return divPrefixes.some((p) => lower.startsWith(p));
         });
@@ -489,23 +527,37 @@ export function formatAuditMarkdown(audit) {
   lines.push("**Audit-rapport för ScoutID-länkningar**");
   const m = audit.meta;
   const parts = [
-    `Guild-medlemmar: ${m.guildMembers}`,
-    `Länkade: ${m.linkedUsers}`,
+    `${m.guildMembers} medlemmar`,
+    `${m.linkedUsers} länkade`,
   ];
-  if (m.participants != null) parts.push(`Deltagare i ScoutNet: ${m.participants}`);
-  parts.push(`Totalt avvikelser: ${audit.totals.issues}`);
+  if (m.participants != null) parts.push(`${m.participants} i ScoutNet`);
   lines.push(parts.join(" · "));
   lines.push("");
 
-  audit.categories.forEach((c, i) => {
-    lines.push(`__${i + 1}. ${c.title}__ (${c.count})`);
-    if (c.items.length === 0) {
-      lines.push("(Inga)");
-    } else {
-      for (const item of c.items) lines.push(item);
+  if (audit.totals.issues === 0) {
+    lines.push("✅ Inga avvikelser hittades.");
+    const skipped = audit.categories.filter((c) =>
+      c.items.some((i) => i.startsWith("(")),
+    );
+    if (skipped.length > 0) {
+      lines.push("");
+      lines.push(`_Skippade: ${skipped.map((c) => c.title).join(", ")}_`);
+    }
+    return lines.join("\n").trimEnd();
+  }
+
+  lines.push(`Hittade **${audit.totals.issues}** avvikelser:`);
+  lines.push("");
+
+  const withIssues = audit.categories.filter((c) => c.count > 0);
+  for (const c of withIssues) {
+    lines.push(`__${c.title}__ — ${c.count}`);
+    for (const item of c.items) {
+      if (item.startsWith("(")) continue;
+      lines.push(item);
     }
     lines.push("");
-  });
+  }
 
   return lines.join("\n").trimEnd();
 }

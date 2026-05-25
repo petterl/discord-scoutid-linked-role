@@ -489,17 +489,12 @@ async function handleLinkCommand(interaction) {
     const messageParts = [];
 
     const existing = await storage.getLinkedScoutIDUserId(targetUserId);
-    if (existing === scoutIdInput) {
-      await discord.editInteractionResponse(
-        token,
-        `<@${targetUserId}> är redan länkad till scoutid \`${scoutIdInput}\`.`,
-      );
-      return;
-    }
-    if (existing) {
+    if (existing && existing !== scoutIdInput) {
       messageParts.push(
         `⚠️ Var länkad till \`${existing}\`, ersätter med \`${scoutIdInput}\`.`,
       );
+    } else if (existing === scoutIdInput) {
+      messageParts.push("Redan länkad — tvingar om-synk av roller och smeknamn.");
     }
 
     let participant = null;
@@ -528,6 +523,17 @@ async function handleLinkCommand(interaction) {
       messageParts.push(`Fel vid rolluppdatering: ${result.error}`);
     } else {
       messageParts.push(formatChanges(result));
+    }
+
+    // Try to re-push Linked Role metadata so Discord can re-assign Scout role.
+    // Requires user's OAuth tokens to still be in storage from a previous /linked-role.
+    try {
+      await updateMetadata(targetUserId);
+      messageParts.push("Metadata pushad → Discord uppdaterar Scout-rollen.");
+    } catch (e) {
+      messageParts.push(
+        `⚠️ Kunde inte pusha metadata (Scout-rollen kan behöva re-verifieras via \`/linked-role\`): ${e.message}`,
+      );
     }
 
     await discord.editInteractionResponse(
@@ -560,22 +566,28 @@ function formatChanges({ added, removed }) {
 
 async function updateMetadata(discordUserId) {
   const scoutId = await storage.getLinkedScoutIDUserId(discordUserId);
-  if (!scoutId) return;
+  if (!scoutId) throw new Error("ingen storage-länk");
 
-  let metadata = {};
+  const discordTokens = await storage.getDiscordTokens(discordUserId);
+  if (!discordTokens) {
+    throw new Error("Discord OAuth-tokens saknas i storage");
+  }
+
+  let metadata = { scoutid: scoutId };
   try {
     const scoutIDTokens = await storage.getScoutIDTokens(scoutId);
-    const scoutIDData = await scoutid.getUserData(scoutIDTokens);
-    metadata = {
-      scoutid: scoutIDData.scoutid,
-      email: scoutIDData.email,
-      name: scoutIDData.name,
-    };
+    if (scoutIDTokens) {
+      const scoutIDData = await scoutid.getUserData(scoutIDTokens);
+      metadata = {
+        scoutid: scoutIDData.scoutid,
+        email: scoutIDData.email,
+        name: scoutIDData.name,
+      };
+    }
   } catch (e) {
     console.error(`Error fetching ScoutID data: ${e.message}`);
   }
 
-  const discordTokens = await storage.getDiscordTokens(discordUserId);
   await discord.pushMetadata(discordUserId, discordTokens, metadata);
 }
 

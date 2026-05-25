@@ -32,6 +32,8 @@ docker run --rm --env-file .env acrwsj27prodsec.azurecr.io/discord-scoutid-linke
 - The bot cannot modify users above it in Discord's role hierarchy (403 is expected for admins)
 - `register.js` only needs Discord API, but imports storage.js which tries Redis — Redis errors during registration are harmless
 - Interaction responses use a 1-second delay before processing to avoid race conditions with Discord's deferred response handling
+- **Scout-rollen är säkerhetsgränsen.** Saknar en länkad användare Scout-rollen i Discord (managed Linked Role) så strippas alla bot-hanterade roller och `Overifierad` sätts vid nästa `syncUserRoles`. Storage-länken behålls så användaren kan re-verifiera utan att admin behöver fråga efter scoutid igen.
+- OAuth-tokens (`discord-*`, `scoutid-*`) lagras utan TTL i Redis. Refresh-tokens från Discord är giltiga i månader, och persistent lagring låter `/link-scoutid` re-pusha Linked Role-metadata i bakgrunden.
 
 ## ScoutNet API
 
@@ -72,7 +74,8 @@ Audit-logiken ligger i [src/audit.js](src/audit.js) och körs antingen via slash
 ### Kategorier som kontrolleras
 
 1. **Scout-roll utan storage-länk** — användare med Scout-rollen men ingen ScoutID-länkning i Redis
-2. **Storage-länk utan guild-medlem** — gamla länkningar för användare som lämnat servern
+2. **Länkade utan Scout-rollen** — Discord Linked Role har fallit bort (frånkopplad app, lämnad/återansluten server). Användaren måste re-verifiera via `/linked-role` själv eftersom Scout är en managed roll
+3. **Storage-länk utan guild-medlem** — gamla länkningar för användare som lämnat servern
 3. **Avbokade i ScoutNet** — länkade användare med `cancelled_date` satt
 4. **Namnskillnader** — Discord-smeknamn matchar inte ScoutNet-namn
 5. **Saknade statiska roller** — roller boten skulle tilldela som inte finns i guilden

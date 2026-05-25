@@ -20,7 +20,7 @@ ensureConnection().catch(console.error);
 
 export async function storeDiscordTokens(userId, tokens) {
   await ensureConnection();
-  await client.setEx(`discord-${userId}`, 3600, JSON.stringify(tokens));
+  await client.set(`discord-${userId}`, JSON.stringify(tokens));
 }
 
 export async function getDiscordTokens(userId) {
@@ -33,7 +33,7 @@ export async function getDiscordTokens(userId) {
 
 export async function storeScoutIDTokens(userId, tokens) {
   await ensureConnection();
-  await client.setEx(`scoutid-${userId}`, 3600, JSON.stringify(tokens));
+  await client.set(`scoutid-${userId}`, JSON.stringify(tokens));
 }
 
 export async function getScoutIDTokens(userId) {
