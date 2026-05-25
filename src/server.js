@@ -237,20 +237,65 @@ async function handleRefreshCommand(interaction) {
       );
 
       const results = await roles.syncAllUserRoles(guildId);
-      const lines = results.map((r) => {
-        if (r.error) return `- <@${r.discordUserId}>: ${r.error}`;
-        return `- <@${r.discordUserId}>: ${formatChanges(r)}`;
-      });
+      if (results.length === 0) {
+        await discord.editInteractionResponse(
+          token,
+          "Inga länkade användare hittades.",
+        );
+        return;
+      }
 
-      const message =
-        lines.length > 0
-          ? `Uppdaterade ${results.length} användare:\n${lines.join("\n")}`
-          : "Inga länkade användare hittades.";
+      const errors = results.filter((r) => r.error);
+      const changed = results.filter(
+        (r) => !r.error && ((r.added?.length ?? 0) > 0 || (r.removed?.length ?? 0) > 0),
+      );
+      const unchanged = results.length - errors.length - changed.length;
 
-      // Discord 2000 char limit
-      const truncated =
-        message.length > 2000 ? message.substring(0, 1997) + "..." : message;
-      await discord.editInteractionResponse(token, truncated);
+      const lines = [];
+      lines.push(
+        `Synkade **${results.length}** användare: ${changed.length} med ändringar, ${errors.length} fel, ${unchanged} oförändrade.`,
+      );
+      if (changed.length > 0) {
+        lines.push("");
+        lines.push("**Ändringar:**");
+        for (const r of changed) {
+          lines.push(`- <@${r.discordUserId}>: ${formatChanges(r)}`);
+        }
+      }
+      if (errors.length > 0) {
+        lines.push("");
+        lines.push("**Fel:**");
+        for (const r of errors) {
+          lines.push(`- <@${r.discordUserId}>: ${r.error}`);
+        }
+      }
+
+      const message = lines.join("\n");
+      if (message.length <= 2000) {
+        await discord.editInteractionResponse(token, message);
+      } else {
+        // Build full detailed report as attachment
+        const full = [
+          `Synkade ${results.length} användare: ${changed.length} med ändringar, ${errors.length} fel, ${unchanged} oförändrade.`,
+          "",
+          "=== Ändringar ===",
+          ...changed.map((r) => `${r.discordUserId}: ${formatChanges(r)}`),
+          "",
+          "=== Fel ===",
+          ...errors.map((r) => `${r.discordUserId}: ${r.error}`),
+          "",
+          "=== Oförändrade ===",
+          ...results
+            .filter((r) => !r.error && !changed.includes(r))
+            .map((r) => r.discordUserId),
+        ].join("\n");
+        await discord.editInteractionResponseWithFile(
+          token,
+          `Synkade ${results.length} användare: ${changed.length} ändringar, ${errors.length} fel. Full lista i bifogad fil.`,
+          "refresh-scoutid.txt",
+          full,
+        );
+      }
     } else if (personOption) {
       // Refresh specific person
       const targetUserId = personOption.value;
