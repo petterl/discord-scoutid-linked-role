@@ -13,6 +13,7 @@ docker_image_name = "discord-scoutid-linked-role"
 docker_image_tag  = "latest"
 
 # Role configuration
+scoutnet_event_role        = "wsj-event"
 scoutnet_fee_roles         = "25694:deltagare,27561:deltagare,25696:ist,25702:IST-Direktresa,33293:ledare,34850:ledare,25697:cmt,25693:cmt"
 scoutnet_division_roles    = "deltagare:88168:Deltagare-{div}:Deltagare-Väntande,ist:88168:IST-Patrull-{div}:IST-Väntande,ledare:107592:Ledare-{div}:Ledare-Väntande"
 scoutnet_nickname_suffixes = "deltagare:{div}:,ledare:AL{div}:AL,ist:IST-{div}:IST,IST-Direktresa::IST,cmt::CMT"

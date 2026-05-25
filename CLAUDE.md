@@ -48,13 +48,35 @@ docker run --rm --env-file .env acrwsj27prodsec.azurecr.io/discord-scoutid-linke
 
 ## Config format reference
 
+Aktuell prod-config (se [terraform/terraform.tfvars](terraform/terraform.tfvars)):
+
 ```
+# Marker-roller (alla länkade / alla event-anmälda)
+SCOUTNET_SCOUT_ROLE=scout
+SCOUTNET_EVENT_ROLE=wsj-event
+
 # fee_id:category
-SCOUTNET_FEE_ROLES=25694:deltagare,27561:deltagare,...
+SCOUTNET_FEE_ROLES=25694:deltagare,27561:deltagare,25696:ist,25702:IST-Direktresa,33293:ledare,34850:ledare,25697:cmt,25693:cmt
 
 # category:questionId:roleWithDiv:roleWithoutDiv
-SCOUTNET_DIVISION_ROLES=deltagare:88168:Deltagare-{div}:Deltagare-Väntande,...
+SCOUTNET_DIVISION_ROLES=deltagare:88168:Deltagare-{div}:Deltagare-Väntande,ist:88168:IST-Patrull-{div}:IST-Väntande,ledare:107592:Ledare-{div}:Ledare-Väntande
 
 # category:suffixWithDiv:suffixWithoutDiv (empty = no suffix)
 SCOUTNET_NICKNAME_SUFFIXES=deltagare:{div}:,ledare:AL{div}:AL,ist:IST-{div}:IST,IST-Direktresa::IST,cmt::CMT
 ```
+
+## Krav på Discord-servern
+
+Discord-rollerna ägs av [discord-wsj27-infra](https://github.com/wsj27se/discord-wsj27-infra) (Terraform). Boten letar upp roller efter namn (case-insensitive) — om en roll inte finns hoppas tilldelningen tyst över. Roller som måste finnas:
+
+| Bot tilldelar | Källa i infra-repot |
+|---|---|
+| `scout` | Extern `Scout`-roll (ScoutID-bot, ej Terraform) |
+| `wsj-event` | `discord_role.wsj_event` |
+| `Deltagare-{nr}` / `Deltagare-Väntande` | `discord_role.participant[*]` / `discord_role.participant_pending` |
+| `Ledare-{nr}` / `Ledare-Väntande` | `discord_role.leader[*]` / `discord_role.leader_pending` |
+| `IST-Patrull-{nr}` / `IST-Väntande` | `discord_role.ist_patrol[*]` / `discord_role.ist_pending` |
+| `IST-Direktresa` | `discord_role.ist_direct_travel` |
+| `CMT` | `discord_role.cmt` |
+
+Antal avdelningar (`var.troops`) och IST-patruller (`var.ist_patrols`) i infra-repot måste täcka alla värden ScoutNet kan returnera för division-frågorna 88168 (deltagare/IST) och 107592 (ledare).
