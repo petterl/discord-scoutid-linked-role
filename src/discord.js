@@ -40,7 +40,7 @@ export async function getOAuthTokens(code) {
     });
     if (response.ok) return await response.json();
     const error = new Error(
-      `Error fetching OAuth tokens: [${response.status}] ${response.statusText}`
+      `Error fetching OAuth tokens: [${response.status}] ${response.statusText}`,
     );
     error.status = response.status;
     throw error;
@@ -69,7 +69,7 @@ export async function getAccessToken(userId, tokens) {
         return tokens;
       }
       const error = new Error(
-        `Error refreshing access token: [${response.status}] ${response.statusText}`
+        `Error refreshing access token: [${response.status}] ${response.statusText}`,
       );
       error.status = response.status;
       throw error;
@@ -91,7 +91,7 @@ export async function getUserData(tokens) {
     });
     if (response.ok) return await response.json();
     const error = new Error(
-      `Error fetching user data: [${response.status}] ${response.statusText}`
+      `Error fetching user data: [${response.status}] ${response.statusText}`,
     );
     error.status = response.status;
     throw error;
@@ -106,7 +106,7 @@ export async function getUserGuilds(tokens) {
     });
     if (response.ok) return await response.json();
     const error = new Error(
-      `Error fetching user guilds: [${response.status}] ${response.statusText}`
+      `Error fetching user guilds: [${response.status}] ${response.statusText}`,
     );
     error.status = response.status;
     throw error;
@@ -131,10 +131,10 @@ export async function pushMetadata(userId, tokens, metadata) {
     if (!response.ok) {
       const body = await response.text();
       console.error(
-        `Error pushing metadata: [${response.status}] ${response.statusText}: ${body}`
+        `Error pushing metadata: [${response.status}] ${response.statusText}: ${body}`,
       );
       const error = new Error(
-        `Error pushing metadata: [${response.status}] ${response.statusText}`
+        `Error pushing metadata: [${response.status}] ${response.statusText}`,
       );
       error.status = response.status;
       throw error;
@@ -157,12 +157,12 @@ export async function updateGuildMemberNickname(guildId, userId, nickname) {
     });
     if (response.ok) {
       console.log(
-        `Updated nickname for ${userId} in guild ${guildId} to "${nickname}"`
+        `Updated nickname for ${userId} in guild ${guildId} to "${nickname}"`,
       );
       return true;
     }
     const error = new Error(
-      `Error updating nickname in guild ${guildId}: [${response.status}]`
+      `Error updating nickname in guild ${guildId}: [${response.status}]`,
     );
     error.status = response.status;
     throw error;
@@ -176,9 +176,7 @@ export async function getGuildRoles(guildId) {
       headers: { Authorization: `Bot ${config.DISCORD_TOKEN}` },
     });
     if (response.ok) return await response.json();
-    const error = new Error(
-      `Error fetching guild roles: [${response.status}]`
-    );
+    const error = new Error(`Error fetching guild roles: [${response.status}]`);
     error.status = response.status;
     throw error;
   });
@@ -192,7 +190,7 @@ export async function getGuildMember(guildId, userId) {
     });
     if (response.ok) return await response.json();
     const error = new Error(
-      `Error fetching guild member: [${response.status}]`
+      `Error fetching guild member: [${response.status}]`,
     );
     error.status = response.status;
     throw error;
@@ -208,7 +206,7 @@ export async function addRoleToUser(guildId, userId, roleId) {
     });
     if (!response.ok) {
       const error = new Error(
-        `Error adding role ${roleId}: [${response.status}]`
+        `Error adding role ${roleId}: [${response.status}]`,
       );
       error.status = response.status;
       throw error;
@@ -226,7 +224,7 @@ export async function removeRoleFromUser(guildId, userId, roleId) {
     });
     if (!response.ok) {
       const error = new Error(
-        `Error removing role ${roleId}: [${response.status}]`
+        `Error removing role ${roleId}: [${response.status}]`,
       );
       error.status = response.status;
       throw error;
@@ -270,7 +268,40 @@ export async function registerGuildCommand(guildId) {
     if (response.ok) return await response.json();
     const errorText = await response.text();
     throw new Error(
-      `Error registering command: [${response.status}] ${errorText}`
+      `Error registering command: [${response.status}] ${errorText}`,
+    );
+  });
+}
+
+export async function registerStatusCommand(guildId) {
+  const url = `https://discord.com/api/v10/applications/${config.DISCORD_CLIENT_ID}/guilds/${guildId}/commands`;
+  const command = {
+    name: "status-scoutid",
+    description: "Visa länkningsstatus och roller för en användare (admin)",
+    default_member_permissions: "8", // ADMINISTRATOR
+    options: [
+      {
+        name: "person",
+        description: "Person att visa status för",
+        type: 6, // USER
+        required: true,
+      },
+    ],
+  };
+
+  return await retryWithBackoff(async () => {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        Authorization: `Bot ${config.DISCORD_TOKEN}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(command),
+    });
+    if (response.ok) return await response.json();
+    const errorText = await response.text();
+    throw new Error(
+      `Error registering command: [${response.status}] ${errorText}`,
     );
   });
 }
@@ -288,7 +319,7 @@ export function verifyInteraction(publicKey, signature, timestamp, body) {
         format: "der",
         type: "spki",
       },
-      Buffer.from(signature, "hex")
+      Buffer.from(signature, "hex"),
     );
   } catch {
     return false;
@@ -307,7 +338,7 @@ export async function editInteractionResponse(interactionToken, content) {
     });
     if (!response.ok) {
       const error = new Error(
-        `Error editing interaction response: [${response.status}]`
+        `Error editing interaction response: [${response.status}]`,
       );
       error.status = response.status;
       throw error;
@@ -326,7 +357,7 @@ async function retryWithBackoff(fn, maxRetries = 3) {
       if (error.status === 429 && attempt < maxRetries - 1) {
         const delay = Math.pow(2, attempt) * 1000;
         console.log(
-          `Rate limited, retrying in ${delay}ms (attempt ${attempt + 1}/${maxRetries})`
+          `Rate limited, retrying in ${delay}ms (attempt ${attempt + 1}/${maxRetries})`,
         );
         await new Promise((resolve) => setTimeout(resolve, delay));
       } else {

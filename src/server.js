@@ -4,6 +4,7 @@ import cookieParser from "cookie-parser";
 import config from "./config.js";
 import * as discord from "./discord.js";
 import * as scoutid from "./scoutid.js";
+import * as scoutnet from "./scoutnet.js";
 import * as storage from "./storage.js";
 import * as roles from "./roles.js";
 import { getSuccessPageHTML } from "./templates.js";
@@ -49,14 +50,13 @@ app.get("/discord-oauth-callback", async (req, res) => {
     });
 
     // Redirect to ScoutID for identity verification
-    const {
-      state,
-      codeVerifier,
-      url,
-    } = scoutid.getOidcAuthorizationUrl();
+    const { state, codeVerifier, url } = scoutid.getOidcAuthorizationUrl();
 
     res.cookie("clientState", state, { maxAge: 1000 * 60 * 5, signed: true });
-    await storage.storeStateData(state, { discordUserId: userId, codeVerifier });
+    await storage.storeStateData(state, {
+      discordUserId: userId,
+      codeVerifier,
+    });
     res.redirect(url);
   } catch (e) {
     console.error(e);
@@ -82,7 +82,7 @@ app.get("/scoutid-oauth-callback", async (req, res) => {
     const scoutIDUser = await scoutid.getUserData(tokens);
 
     console.log(
-      `Linked ScoutID ${scoutIDUser.scoutid} to Discord user ${discordUserId}`
+      `Linked ScoutID ${scoutIDUser.scoutid} to Discord user ${discordUserId}`,
     );
 
     await storage.storeScoutIDTokens(scoutIDUser.scoutid, {
@@ -151,7 +151,7 @@ app.post(
         config.DISCORD_PUBLIC_KEY,
         signature,
         timestamp,
-        rawBody
+        rawBody,
       )
     ) {
       return res.sendStatus(401);
@@ -165,21 +165,27 @@ app.post(
     }
 
     // Slash command
-    if (
-      interaction.type === 2 &&
-      interaction.data.name === "refresh-scoutid"
-    ) {
-      // Respond with deferred message (type 5), then process in background
-      res.json({ type: 5 });
+    if (interaction.type === 2 && interaction.data.name === "refresh-scoutid") {
+      // Respond with deferred ephemeral message (type 5, flags 64), then process in background
+      res.json({ type: 5, data: { flags: 64 } });
       setTimeout(
         () => handleRefreshCommand(interaction).catch(console.error),
-        1000
+        1000,
+      );
+      return;
+    }
+
+    if (interaction.type === 2 && interaction.data.name === "status-scoutid") {
+      res.json({ type: 5, data: { flags: 64 } });
+      setTimeout(
+        () => handleStatusCommand(interaction).catch(console.error),
+        1000,
       );
       return;
     }
 
     res.sendStatus(400);
-  }
+  },
 );
 
 async function handleRefreshCommand(interaction) {
@@ -190,7 +196,7 @@ async function handleRefreshCommand(interaction) {
   const isAdmin = (callerPermissions & ADMIN_PERMISSION) === ADMIN_PERMISSION;
 
   const personOption = interaction.data.options?.find(
-    (o) => o.name === "person"
+    (o) => o.name === "person",
   );
   const allOption = interaction.data.options?.find((o) => o.name === "alla");
 
@@ -200,7 +206,7 @@ async function handleRefreshCommand(interaction) {
       if (!isAdmin) {
         await discord.editInteractionResponse(
           token,
-          "Du måste vara admin för att uppdatera alla."
+          "Du måste vara admin för att uppdatera alla.",
         );
         return;
       }
@@ -208,7 +214,7 @@ async function handleRefreshCommand(interaction) {
       const linkedUsers = await storage.getAllLinkedUsers();
       console.log(
         `Found ${linkedUsers.length} linked users:`,
-        linkedUsers.map((u) => `${u.discordUserId} -> ${u.scoutId}`)
+        linkedUsers.map((u) => `${u.discordUserId} -> ${u.scoutId}`),
       );
 
       const results = await roles.syncAllUserRoles(guildId);
@@ -233,7 +239,7 @@ async function handleRefreshCommand(interaction) {
       if (targetUserId !== callerId && !isAdmin) {
         await discord.editInteractionResponse(
           token,
-          "Du måste vara admin för att uppdatera andra."
+          "Du måste vara admin för att uppdatera andra.",
         );
         return;
       }
@@ -244,12 +250,12 @@ async function handleRefreshCommand(interaction) {
       if (result.error) {
         await discord.editInteractionResponse(
           token,
-          `<@${targetUserId}>: ${result.error}`
+          `<@${targetUserId}>: ${result.error}`,
         );
       } else {
         await discord.editInteractionResponse(
           token,
-          `<@${targetUserId}>: ${formatChanges(result)}`
+          `<@${targetUserId}>: ${formatChanges(result)}`,
         );
       }
     } else {
@@ -260,17 +266,124 @@ async function handleRefreshCommand(interaction) {
       if (result.error) {
         await discord.editInteractionResponse(
           token,
-          `<@${callerId}>: ${result.error}`
+          `<@${callerId}>: ${result.error}`,
         );
       } else {
         await discord.editInteractionResponse(
           token,
-          `<@${callerId}>: ${formatChanges(result)}`
+          `<@${callerId}>: ${formatChanges(result)}`,
         );
       }
     }
   } catch (e) {
     console.error("Error handling refresh command:", e);
+    await discord.editInteractionResponse(token, `Fel: ${e.message}`);
+  }
+}
+
+async function handleStatusCommand(interaction) {
+  const guildId = interaction.guild_id;
+  const token = interaction.token;
+  const callerPermissions = BigInt(interaction.member.permissions);
+  const isAdmin = (callerPermissions & ADMIN_PERMISSION) === ADMIN_PERMISSION;
+
+  if (!isAdmin) {
+    await discord.editInteractionResponse(
+      token,
+      "Du måste vara admin för att använda det här kommandot.",
+    );
+    return;
+  }
+
+  const targetUserId = interaction.data.options.find(
+    (o) => o.name === "person",
+  ).value;
+
+  try {
+    const lines = [];
+    lines.push(`**Status för <@${targetUserId}>**`);
+
+    // ScoutID link
+    const scoutId = await storage.getLinkedScoutIDUserId(targetUserId);
+    if (!scoutId) {
+      lines.push("🔴 Inte länkad till ScoutID");
+    } else {
+      lines.push(`🟢 Länkad till ScoutID: \`${scoutId}\``);
+
+      // ScoutID name (from stored tokens)
+      try {
+        const scoutIDTokens = await storage.getScoutIDTokens(scoutId);
+        if (scoutIDTokens) {
+          const scoutIDData = await scoutid.getUserData(scoutIDTokens);
+          lines.push(`👤 Namn: ${scoutIDData.name}`);
+        }
+      } catch (e) {
+        lines.push(`👤 Namn: (kunde inte hämta — ${e.message})`);
+      }
+
+      // ScoutNet participant info
+      if (config.SCOUTNET_EVENT_ID) {
+        try {
+          const participant = await scoutnet.getParticipant(scoutId);
+          if (!participant) {
+            lines.push("📋 ScoutNet: Inte registrerad i evenemanget");
+          } else if (participant.cancelled_date != null) {
+            lines.push(
+              `📋 ScoutNet: Avregistrerad (${participant.cancelled_date})`,
+            );
+          } else {
+            const category =
+              config.SCOUTNET_FEE_ROLES?.[String(participant.fee_id)] ??
+              "(okänd)";
+            const divConfig = config.SCOUTNET_DIVISION_ROLES?.[category];
+            const division = divConfig
+              ? participant.questions?.[divConfig.questionId] || null
+              : null;
+            lines.push(
+              `📋 ScoutNet: fee_id=${participant.fee_id}, kategori=${category}, patrull=${division ?? "(saknas)"}`,
+            );
+          }
+        } catch (e) {
+          lines.push(`📋 ScoutNet: Fel — ${e.message}`);
+        }
+      }
+
+      // Desired roles
+      try {
+        const desiredRoles = await roles.getDesiredRoles(scoutId);
+        lines.push(`🎯 Förväntade roller: ${desiredRoles.join(", ")}`);
+      } catch (e) {
+        lines.push(`🎯 Förväntade roller: Fel — ${e.message}`);
+      }
+    }
+
+    // Current Discord roles
+    try {
+      const member = await discord.getGuildMember(guildId, targetUserId);
+      const guildRoles = await discord.getGuildRoles(guildId);
+      const roleMap = Object.fromEntries(guildRoles.map((r) => [r.id, r.name]));
+      const memberRoleNames = (member.roles || [])
+        .map((id) => roleMap[id] ?? id)
+        .sort();
+      const nick =
+        member.nick || member.user?.global_name || "(inget smeknamn)";
+      lines.push(`🏷️ Discord-smeknamn: ${nick}`);
+      lines.push(
+        memberRoleNames.length > 0
+          ? `🎭 Nuvarande roller: ${memberRoleNames.join(", ")}`
+          : "🎭 Nuvarande roller: (inga)",
+      );
+    } catch (e) {
+      lines.push(`🎭 Nuvarande roller: Fel — ${e.message}`);
+    }
+
+    const message = lines.join("\n");
+    await discord.editInteractionResponse(
+      token,
+      message.length > 2000 ? message.substring(0, 1997) + "..." : message,
+    );
+  } catch (e) {
+    console.error("Error handling status command:", e);
     await discord.editInteractionResponse(token, `Fel: ${e.message}`);
   }
 }
@@ -343,14 +456,18 @@ async function addDiscordRoles(userId, roleNames) {
       if (role) {
         try {
           await discord.addRoleToUser(guildId, userId, role.id);
-          console.log(`Added role "${roleName}" (${role.id}) to user ${userId}`);
+          console.log(
+            `Added role "${roleName}" (${role.id}) to user ${userId}`,
+          );
         } catch (e) {
           console.error(
-            `Failed to add role "${roleName}" (${role.id}) to user ${userId}: ${e.message} (bot role may be too low in hierarchy)`
+            `Failed to add role "${roleName}" (${role.id}) to user ${userId}: ${e.message} (bot role may be too low in hierarchy)`,
           );
         }
       } else {
-        console.warn(`Role "${roleName}" not found in guild — create it in Discord`);
+        console.warn(
+          `Role "${roleName}" not found in guild — create it in Discord`,
+        );
       }
     }
   } catch (e) {

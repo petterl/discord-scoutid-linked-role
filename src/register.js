@@ -47,10 +47,16 @@ if (config.DISCORD_GUILD_ID) {
   } catch (e) {
     console.error("Command registration failed:", e.message);
   }
+
+  console.log("Registering /status-scoutid command...");
+  try {
+    const result = await discord.registerStatusCommand(config.DISCORD_GUILD_ID);
+    console.log("Command registered:", result.name);
+  } catch (e) {
+    console.error("Command registration failed:", e.message);
+  }
 } else {
-  console.log(
-    "Skipping slash command registration: DISCORD_GUILD_ID not set"
-  );
+  console.log("Skipping slash command registration: DISCORD_GUILD_ID not set");
 }
 
 process.exit(0);
