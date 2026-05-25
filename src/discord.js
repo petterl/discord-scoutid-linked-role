@@ -206,6 +206,27 @@ export async function getGuildMembers(guildId) {
   return members;
 }
 
+let cachedBotUserId = null;
+
+export async function getCurrentBotUserId() {
+  if (cachedBotUserId) return cachedBotUserId;
+  const url = "https://discord.com/api/v10/users/@me";
+  const response = await fetch(url, {
+    headers: { Authorization: `Bot ${config.DISCORD_TOKEN}` },
+  });
+  if (!response.ok) {
+    throw new Error(`Error fetching bot user: [${response.status}]`);
+  }
+  const data = await response.json();
+  cachedBotUserId = data.id;
+  return cachedBotUserId;
+}
+
+export async function getBotMember(guildId) {
+  const botUserId = await getCurrentBotUserId();
+  return await getGuildMember(guildId, botUserId);
+}
+
 export async function getGuildMember(guildId, userId) {
   const url = `https://discord.com/api/v10/guilds/${guildId}/members/${userId}`;
   return await retryWithBackoff(async () => {
@@ -301,14 +322,14 @@ export async function registerStatusCommand(guildId) {
   const url = `https://discord.com/api/v10/applications/${config.DISCORD_CLIENT_ID}/guilds/${guildId}/commands`;
   const command = {
     name: "status-scoutid",
-    description: "Visa länkningsstatus och roller för en användare (admin)",
+    description: "Visa status för en person, eller server-sammanfattning utan argument (admin)",
     default_member_permissions: "8", // ADMINISTRATOR
     options: [
       {
         name: "person",
-        description: "Person att visa status för",
+        description: "Person att visa status för (utelämna för server-sammanfattning)",
         type: 6, // USER
-        required: true,
+        required: false,
       },
     ],
   };

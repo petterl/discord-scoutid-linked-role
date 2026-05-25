@@ -7,6 +7,7 @@ import * as scoutid from "./scoutid.js";
 import * as scoutnet from "./scoutnet.js";
 import * as storage from "./storage.js";
 import * as roles from "./roles.js";
+import * as audit from "./audit.js";
 import { getSuccessPageHTML } from "./templates.js";
 
 const app = express();
@@ -313,9 +314,25 @@ async function handleStatusCommand(interaction) {
     return;
   }
 
-  const targetUserId = interaction.data.options.find(
+  const targetUserId = interaction.data.options?.find(
     (o) => o.name === "person",
-  ).value;
+  )?.value;
+
+  // No person argument → server-wide audit summary
+  if (!targetUserId) {
+    try {
+      const result = await audit.runAudit(guildId);
+      const summary = audit.summarizeAudit(result);
+      await discord.editInteractionResponse(
+        token,
+        `**Server-status**\n${summary}\n\nKör \`/audit-scoutid\` för full rapport.`,
+      );
+    } catch (e) {
+      console.error("Error handling status summary:", e);
+      await discord.editInteractionResponse(token, `Fel: ${e.message}`);
+    }
+    return;
+  }
 
   try {
     const lines = [];
@@ -421,132 +438,14 @@ async function handleAuditCommand(interaction) {
   }
 
   try {
-    const [guildMembers, guildRoles, linkedUsers, participants] =
-      await Promise.all([
-        discord.getGuildMembers(guildId),
-        discord.getGuildRoles(guildId),
-        storage.getAllLinkedUsers(),
-        config.SCOUTNET_EVENT_ID ? scoutnet.getParticipants() : null,
-      ]);
-
-    const scoutRoleName = config.SCOUTNET_SCOUT_ROLE;
-    const scoutRole = guildRoles.find(
-      (r) => r.name.toLowerCase() === scoutRoleName.toLowerCase(),
-    );
-
-    const linkedMap = new Map(
-      linkedUsers.map((u) => [u.discordUserId, u.scoutId]),
-    );
-    const memberMap = new Map(guildMembers.map((m) => [m.user.id, m]));
-
-    const lines = [];
-    lines.push("**Audit-rapport för ScoutID-länkningar**");
-    lines.push(
-      `Guild-medlemmar: ${guildMembers.length} · Länkade i storage: ${linkedUsers.length}`,
-    );
-    lines.push("");
-
-    // Category 1: has Scout role but no storage link
-    lines.push(
-      `__1. Har \`${scoutRoleName}\`-rollen men ingen storage-länk__`,
-    );
-    if (!scoutRole) {
-      lines.push(
-        `(Rollen \`${scoutRoleName}\` finns inte i guilden — hoppar över.)`,
-      );
-    } else {
-      const orphans = guildMembers.filter(
-        (m) =>
-          m.roles.includes(scoutRole.id) && !linkedMap.has(m.user.id),
-      );
-      if (orphans.length === 0) {
-        lines.push("(Inga)");
-      } else {
-        for (const m of orphans) {
-          const name = m.nick || m.user.global_name || m.user.username;
-          lines.push(`- <@${m.user.id}> (${name})`);
-        }
-      }
-    }
-    lines.push("");
-
-    // Category 2: storage link but no guild member
-    lines.push("__2. Storage-länk men inte (längre) medlem i guilden__");
-    const stale = linkedUsers.filter((u) => !memberMap.has(u.discordUserId));
-    if (stale.length === 0) {
-      lines.push("(Inga)");
-    } else {
-      for (const u of stale) {
-        lines.push(`- discord=\`${u.discordUserId}\` scoutid=\`${u.scoutId}\``);
-      }
-    }
-    lines.push("");
-
-    // Category 3: linked but cancelled in ScoutNet
-    lines.push("__3. Länkad men avbokad i ScoutNet__");
-    if (!participants) {
-      lines.push("(SCOUTNET_EVENT_ID är inte satt — hoppar över.)");
-    } else {
-      const cancelled = linkedUsers.filter((u) => {
-        const p = participants[u.scoutId];
-        return p && p.cancelled_date != null;
-      });
-      if (cancelled.length === 0) {
-        lines.push("(Inga)");
-      } else {
-        for (const u of cancelled) {
-          const p = participants[u.scoutId];
-          const name =
-            [p.first_name, p.last_name].filter(Boolean).join(" ") || "?";
-          lines.push(
-            `- <@${u.discordUserId}> scoutid=\`${u.scoutId}\` ${name} (avbokad ${p.cancelled_date})`,
-          );
-        }
-      }
-    }
-    lines.push("");
-
-    // Category 4: name mismatch between Discord and ScoutNet
-    lines.push("__4. Möjlig fellänkning — namn matchar inte__");
-    if (!participants) {
-      lines.push("(SCOUTNET_EVENT_ID är inte satt — hoppar över.)");
-    } else {
-      const mismatches = [];
-      for (const u of linkedUsers) {
-        const member = memberMap.get(u.discordUserId);
-        const p = participants[u.scoutId];
-        if (!member || !p || p.cancelled_date != null) continue;
-        if (!p.first_name && !p.last_name) continue;
-
-        const rawDisplay =
-          member.nick || member.user.global_name || member.user.username || "";
-        const displayClean = rawDisplay.replace(/\s*\(.*\)\s*$/, "");
-        const display = normalizeName(displayClean);
-        const first = normalizeName(p.first_name || "");
-        const last = normalizeName(p.last_name || "");
-
-        const firstOk = !first || display.includes(first);
-        const lastOk = !last || display.includes(last);
-        if (firstOk && lastOk) continue;
-
-        mismatches.push(
-          `- <@${u.discordUserId}> scoutid=\`${u.scoutId}\` Discord="${displayClean}" ScoutNet="${[p.first_name, p.last_name].filter(Boolean).join(" ")}"`,
-        );
-      }
-      if (mismatches.length === 0) {
-        lines.push("(Inga)");
-      } else {
-        lines.push(...mismatches);
-      }
-    }
-
-    const message = lines.join("\n");
+    const result = await audit.runAudit(guildId);
+    const message = audit.formatAuditMarkdown(result);
     if (message.length <= 2000) {
       await discord.editInteractionResponse(token, message);
     } else {
       await discord.editInteractionResponseWithFile(
         token,
-        "Audit-rapport (full lista i bifogad fil)",
+        `Audit-rapport (${result.totals.issues} avvikelser, full lista i bifogad fil)`,
         "audit-scoutid.txt",
         message,
       );

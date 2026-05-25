@@ -65,6 +65,29 @@ SCOUTNET_DIVISION_ROLES=deltagare:88168:Deltagare-{div}:Deltagare-Väntande,ist:
 SCOUTNET_NICKNAME_SUFFIXES=deltagare:{div}:,ledare:AL{div}:AL,ist:IST-{div}:IST,IST-Direktresa::IST,cmt::CMT
 ```
 
+## Audit och konsistenskontroll
+
+Audit-logiken ligger i [src/audit.js](src/audit.js) och körs antingen via slash-kommando eller schemalagt.
+
+### Kategorier som kontrolleras
+
+1. **Scout-roll utan storage-länk** — användare med Scout-rollen men ingen ScoutID-länkning i Redis
+2. **Storage-länk utan guild-medlem** — gamla länkningar för användare som lämnat servern
+3. **Avbokade i ScoutNet** — länkade användare med `cancelled_date` satt
+4. **Namnskillnader** — Discord-smeknamn matchar inte ScoutNet-namn
+5. **Saknade statiska roller** — roller boten skulle tilldela som inte finns i guilden
+6. **Saknade division-roller** — `Deltagare-{nr}` etc. som ScoutNet refererar till men som inte finns
+7. **Okända fee_id** — `fee_id` i ScoutNet utan mappning i `SCOUTNET_FEE_ROLES`
+8. **Bot-hierarki/permissions** — roller över botens position, eller saknade `MANAGE_ROLES`/`MANAGE_NICKNAMES`
+9. **Roll-drift** — per användare: vilka roller saknas / vilka borde inte finnas (dry-run sync)
+10. **Multipla division-roller** — användare som har t.ex. `Deltagare-05` och `Deltagare-07` samtidigt
+11. **Fel nickname-suffix** — användare där `(X)` i nicket inte matchar förväntat värde
+
+### Kommandon
+
+- `/audit-scoutid` — full rapport (admin). Filattachment om >2000 tecken.
+- `/status-scoutid` — utan argument: server-sammanfattning. Med `person`: detaljerad status för en användare.
+
 ## Krav på Discord-servern
 
 Discord-rollerna ägs av [discord-wsj27-infra](https://github.com/wsj27se/discord-wsj27-infra) (Terraform). Boten letar upp roller efter namn (case-insensitive) — om en roll inte finns hoppas tilldelningen tyst över. Roller som måste finnas:
