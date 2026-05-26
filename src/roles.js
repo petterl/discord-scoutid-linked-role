@@ -281,13 +281,100 @@ export async function syncUserRoles(guildId, discordUserId) {
 }
 
 /**
- * Sync roles for all linked users. Clears ScoutNet cache first.
+ * Strip a member who has the Scout role but no storage link.
+ *
+ * The Scout role is a managed Discord Linked Role we cannot remove, but a
+ * member with no ScoutID mapping (e.g. after a storage loss) must not keep any
+ * access. Removes every bot-managed role (event, fee, division) and adds
+ * `Overifierad`, forcing the user to re-link before they regain access.
+ *
+ * Caller passes the shared `roleMap` and the member object to avoid refetching.
+ * Returns { added, removed }.
+ */
+export async function stripUnlinkedMember(guildId, discordUserId, roleMap, member) {
+  const managedRoles = getManagedRoleNames();
+  const divPrefixes = getDivisionPrefixes();
+  const currentRoleIds = new Set(member.roles);
+  const added = [];
+  const removed = [];
+
+  // Remove every managed role except the unverified marker itself.
+  for (const managedName of managedRoles) {
+    if (managedName.toLowerCase() === UNVERIFIED_ROLE.toLowerCase()) continue;
+    const role = roleMap.get(managedName.toLowerCase());
+    if (role && !role.managed && currentRoleIds.has(role.id)) {
+      try {
+        await discord.removeRoleFromUser(guildId, discordUserId, role.id);
+        removed.push(managedName);
+      } catch (e) {
+        console.error(
+          `Failed to remove role "${managedName}" (${role.id}) from unlinked ${discordUserId}: ${e.message}`,
+        );
+      }
+    }
+  }
+
+  // Remove dynamic division roles by prefix.
+  for (const prefix of divPrefixes) {
+    for (const [name, role] of roleMap) {
+      if (name.startsWith(prefix) && currentRoleIds.has(role.id)) {
+        try {
+          await discord.removeRoleFromUser(guildId, discordUserId, role.id);
+          removed.push(role.name);
+        } catch (e) {
+          console.error(
+            `Failed to remove role "${role.name}" (${role.id}) from unlinked ${discordUserId}: ${e.message}`,
+          );
+        }
+      }
+    }
+  }
+
+  // Add the Overifierad marker.
+  const unverifiedRole = roleMap.get(UNVERIFIED_ROLE.toLowerCase());
+  if (
+    unverifiedRole &&
+    !unverifiedRole.managed &&
+    !currentRoleIds.has(unverifiedRole.id)
+  ) {
+    try {
+      await discord.addRoleToUser(guildId, discordUserId, unverifiedRole.id);
+      added.push(UNVERIFIED_ROLE);
+    } catch (e) {
+      console.error(
+        `Failed to add ${UNVERIFIED_ROLE} to unlinked ${discordUserId}: ${e.message}`,
+      );
+    }
+  }
+
+  // Strip any "(suffix)" from the nickname — we no longer know their category.
+  try {
+    const currentNick = member.nick || member.user?.global_name || "";
+    const baseName = currentNick.replace(/\s*\(.*\)\s*$/, "");
+    if (baseName && baseName !== currentNick) {
+      await discord.updateGuildMemberNickname(
+        guildId,
+        discordUserId,
+        baseName.substring(0, 32),
+      );
+    }
+  } catch (e) {
+    console.error(`Error resetting nickname for ${discordUserId}: ${e.message}`);
+  }
+
+  return { added, removed };
+}
+
+/**
+ * Sync roles for all linked users, then strip access from any member who has
+ * the Scout role but no storage link (orphans). Clears ScoutNet cache first.
  * Returns array of { discordUserId, added, removed, error }.
  */
 export async function syncAllUserRoles(guildId) {
   await storage.clearScoutNetCache();
 
   const linkedUsers = await storage.getAllLinkedUsers();
+  const linkedSet = new Set(linkedUsers.map((u) => u.discordUserId));
   const results = [];
 
   for (const { discordUserId } of linkedUsers) {
@@ -299,6 +386,38 @@ export async function syncAllUserRoles(guildId) {
     }
     // Small delay to avoid rate limits
     await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+
+  // Strip orphans: members with the Scout role but no storage link.
+  try {
+    const guildRoles = await discord.getGuildRoles(guildId);
+    const roleMap = new Map();
+    for (const role of guildRoles) roleMap.set(role.name.toLowerCase(), role);
+    const scoutRole = roleMap.get(config.SCOUTNET_SCOUT_ROLE.toLowerCase());
+
+    if (scoutRole) {
+      const members = await discord.getGuildMembers(guildId);
+      for (const member of members) {
+        if (!member.roles.includes(scoutRole.id)) continue; // not verified
+        if (linkedSet.has(member.user.id)) continue; // linked → already synced
+        try {
+          const result = await stripUnlinkedMember(
+            guildId,
+            member.user.id,
+            roleMap,
+            member,
+          );
+          if (result.removed.length > 0 || result.added.length > 0) {
+            results.push({ discordUserId: member.user.id, ...result });
+          }
+        } catch (e) {
+          results.push({ discordUserId: member.user.id, error: e.message });
+        }
+        await new Promise((resolve) => setTimeout(resolve, 200));
+      }
+    }
+  } catch (e) {
+    console.error(`Error stripping unlinked members: ${e.message}`);
   }
 
   return results;
