@@ -93,7 +93,10 @@ const config = {
 
   // General
   COOKIE_SECRET: process.env.COOKIE_SECRET,
-  REDIS_URL: process.env.REDIS_URL || "redis://redis:6379",
+
+  // Storage (Azure Table Storage)
+  TABLE_CONNECTION_STRING: process.env.TABLE_CONNECTION_STRING,
+  TABLE_NAME: process.env.TABLE_NAME || "scoutidlinks",
 };
 
 export default config;

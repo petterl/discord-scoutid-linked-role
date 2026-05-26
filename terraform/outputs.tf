@@ -23,14 +23,9 @@ output "container_app_name" {
   value       = azurerm_container_app.main.name
 }
 
-output "redis_hostname" {
-  description = "Redis hostname"
-  value       = azurerm_redis_cache.main.hostname
-}
-
-output "redis_ssl_port" {
-  description = "Redis SSL port"
-  value       = azurerm_redis_cache.main.ssl_port
+output "storage_account_name" {
+  description = "Name of the storage account backing ScoutID links and tokens"
+  value       = azurerm_storage_account.main.name
 }
 
 output "discord_redirect_uri" {

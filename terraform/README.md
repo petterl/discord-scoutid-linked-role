@@ -7,7 +7,7 @@ This directory contains Terraform configuration to deploy the Discord ScoutID Li
 The deployment uses the following Azure services:
 
 - **Azure Container Apps**: Serverless container hosting with consumption-based pricing and scale-to-zero capability
-- **Azure Cache for Redis**: Basic C0 tier (250 MB) for session storage
+- **Azure Storage Account (Table)**: Durable key-value storage for ScoutID links and OAuth tokens
 - **Azure Container Registry**: Basic tier for storing Docker images
 - **Log Analytics Workspace**: For monitoring and logging
 
@@ -15,11 +15,11 @@ The deployment uses the following Azure services:
 
 Approximate monthly costs (as of 2025):
 - Container Apps: ~$0-5/month (with scale to zero)
-- Redis Cache Basic C0: ~$16/month
+- Storage Account (Table, LRS): <$0.10/month at this volume
 - Container Registry Basic: ~$5/month
 - Log Analytics: ~$2-5/month (depending on logs)
 
-**Total: ~$28-31/month**
+**Total: ~$12-15/month**
 
 > Note: Costs may vary by region. The default configuration uses `swedencentral` (Sweden Central) region.
 
@@ -47,7 +47,7 @@ Before deploying, register the required Azure resource providers (this only need
 az provider register --namespace Microsoft.App
 az provider register --namespace Microsoft.OperationalInsights
 az provider register --namespace Microsoft.ContainerRegistry
-az provider register --namespace Microsoft.Cache
+az provider register --namespace Microsoft.Storage
 ```
 
 This takes 2-5 minutes. You can check the registration status with:
@@ -201,7 +201,7 @@ az containerapp logs show \
 ## Cost Optimization Tips
 
 1. **Scale to Zero**: The default configuration allows scaling to 0 replicas when not in use
-2. **Redis Tier**: Using Basic C0 (smallest tier). Upgrade only if you need more memory
+2. **Storage**: Table Storage (LRS) is pay-per-use and effectively free at this volume
 3. **Log Retention**: Set to 30 days. Reduce if not needed
 4. **Region Selection**: Using `swedencentral` for data residency in Sweden
 
@@ -222,9 +222,9 @@ Type `yes` to confirm deletion of all resources.
 - Verify environment variables are set correctly
 - Ensure Docker image was pushed successfully
 
-### Redis connection issues
-- Verify Redis is running: `az redis show --name discord-scoutid-redis --resource-group discord-scoutid-rg`
-- Check REDIS_URL format in environment variables
+### Storage connection issues
+- Verify the storage account exists: `az storage account show --name <account> --resource-group <rg>`
+- Check `TABLE_CONNECTION_STRING` is set (injected as a secret from the storage account connection string)
 
 ### OAuth redirect errors
 - Verify redirect URIs match exactly in Discord/ScoutID settings
@@ -233,5 +233,5 @@ Type `yes` to confirm deletion of all resources.
 ## Additional Resources
 
 - [Azure Container Apps Documentation](https://docs.microsoft.com/en-us/azure/container-apps/)
-- [Azure Cache for Redis Documentation](https://docs.microsoft.com/en-us/azure/azure-cache-for-redis/)
+- [Azure Table Storage Documentation](https://learn.microsoft.com/en-us/azure/storage/tables/)
 - [Terraform Azure Provider Documentation](https://registry.terraform.io/providers/hashicorp/azurerm/latest/docs)

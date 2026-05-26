@@ -19,10 +19,11 @@ docker run --rm --env-file .env acrwsj27prodsec.azurecr.io/discord-scoutid-linke
 
 ## Architecture
 
-- Node.js 20 + Express 5 + Redis (ESM modules)
-- Azure Container Apps + Azure Redis Cache + ACR
+- Node.js 20 + Express 5 + Azure Table Storage (ESM modules)
+- Azure Container Apps + Azure Storage Account (Table) + ACR
 - Terraform in `terraform/` manages all infrastructure
 - Docker build uses Sectra npm registry (`https://feeds.sectra.net/npm/`)
+- Local dev uses the Azurite storage emulator (see `docker-compose.yml`)
 
 ## Key design decisions
 
@@ -30,17 +31,18 @@ docker run --rm --env-file .env acrwsj27prodsec.azurecr.io/discord-scoutid-linke
 - Each fee category can have its own ScoutNet question ID for division assignment
 - Division numbers are zero-padded to minimum 2 digits
 - The bot cannot modify users above it in Discord's role hierarchy (403 is expected for admins)
-- `register.js` only needs Discord API, but imports storage.js which tries Redis — Redis errors during registration are harmless
+- `register.js` only needs Discord API, but imports storage.js which connects to Table Storage — storage errors during registration are harmless
 - Interaction responses use a 1-second delay before processing to avoid race conditions with Discord's deferred response handling
 - **Scout-rollen är säkerhetsgränsen.** Saknar en länkad användare Scout-rollen i Discord (managed Linked Role) så strippas alla bot-hanterade roller och `Overifierad` sätts vid nästa `syncUserRoles`. Storage-länken behålls så användaren kan re-verifiera utan att admin behöver fråga efter scoutid igen.
-- OAuth-tokens (`discord-*`, `scoutid-*`) lagras utan TTL i Redis. Refresh-tokens från Discord är giltiga i månader, och persistent lagring låter `/link-scoutid` re-pusha Linked Role-metadata i bakgrunden.
+- OAuth-tokens (`discord-token`, `scoutid-token`) och länkar (`link`) lagras durabelt i Azure Table Storage (ingen TTL). Cache (`scoutnet`) och OAuth-state (`state`) har ett `expiresAt`-fält (lazy expiry, 10 min) eftersom Table Storage saknar native TTL. Refresh-tokens från Discord är giltiga i månader, och persistent lagring låter `/link-scoutid` re-pusha Linked Role-metadata i bakgrunden.
+- **Varför inte Redis:** Azure Redis Basic-tier saknar persistens och tappar ALL data vid varje nod-omstart/underhåll. 2026-05-26 wipeades alla länkar+tokens av en sådan omstart. Table Storage (LRS) är durabelt och billigare för detta access-mönster (bara läs/skriv vid länkning + audit).
 
 ## ScoutNet API
 
 - Participants endpoint: `https://scoutnet.se/api/project/get/participants?id={EVENT_ID}&key={API_KEY}`
 - Response has `participants` object keyed by member_no
 - Each participant has: `fee_id`, `cancelled_date`, `questions` (object of questionId → answer)
-- Participant data is cached in Redis for 10 minutes
+- Participant data is cached in Table Storage for 10 minutes (lazy expiry via `expiresAt`)
 
 ## Discord Developer Portal
 
@@ -73,7 +75,7 @@ Audit-logiken ligger i [src/audit.js](src/audit.js) och körs antingen via slash
 
 ### Kategorier som kontrolleras
 
-1. **Scout-roll utan storage-länk** — användare med Scout-rollen men ingen ScoutID-länkning i Redis
+1. **Scout-roll utan storage-länk** — användare med Scout-rollen men ingen ScoutID-länkning i Table Storage
 2. **Länkade utan Scout-rollen** — Discord Linked Role har fallit bort (frånkopplad app, lämnad/återansluten server). Användaren måste re-verifiera via `/linked-role` själv eftersom Scout är en managed roll
 3. **Storage-länk utan guild-medlem** — gamla länkningar för användare som lämnat servern
 3. **Avbokade i ScoutNet** — länkade användare med `cancelled_date` satt

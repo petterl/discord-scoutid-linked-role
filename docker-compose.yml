@@ -14,15 +14,15 @@ services:
     networks:
       - bridge-network
 
-  # Redis for session storage
-  redis:
-    image: redis:7-alpine
-    container_name: discord-scoutid-redis
+  # Azurite — local Azure Storage emulator (Table Storage) for development.
+  azurite:
+    image: mcr.microsoft.com/azure-storage/azurite
+    container_name: discord-scoutid-azurite
+    command: azurite-table --tableHost 0.0.0.0 --location /data
     ports:
-      - 6379:6379
+      - 10002:10002
     volumes:
-      - redis-data:/data
-    command: redis-server --appendonly yes
+      - azurite-data:/data
     restart: unless-stopped
     networks:
       - bridge-network
@@ -49,4 +49,4 @@ networks:
     driver: bridge
 
 volumes:
-  redis-data:
+  azurite-data:

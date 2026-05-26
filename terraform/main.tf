@@ -21,22 +21,20 @@ resource "azurerm_resource_group" "main" {
   tags     = var.tags
 }
 
-# Azure Cache for Redis (Basic C0 - Cheapest option)
-resource "azurerm_redis_cache" "main" {
-  name                 = "redis-${var.project_name}-${var.environment}-${var.location-abbr}"
-  location             = azurerm_resource_group.main.location
-  resource_group_name  = azurerm_resource_group.main.name
-  capacity             = 0
-  family               = "C"
-  sku_name             = "Basic"
-  non_ssl_port_enabled = false
-  minimum_tls_version  = "1.2"
+# Durable key-value storage for ScoutID links and OAuth tokens.
+resource "azurerm_storage_account" "main" {
+  name                     = replace("st${var.project_name}${var.environment}${var.location-abbr}", "-", "")
+  resource_group_name      = azurerm_resource_group.main.name
+  location                 = azurerm_resource_group.main.location
+  account_tier             = "Standard"
+  account_replication_type = "LRS"
+  min_tls_version          = "TLS1_2"
+  tags                     = var.tags
+}
 
-  redis_configuration {
-    data_persistence_authentication_method = "SAS"
-  }
-
-  tags = var.tags
+resource "azurerm_storage_table" "links" {
+  name                 = "scoutidlinks"
+  storage_account_name = azurerm_storage_account.main.name
 }
 
 # Log Analytics Workspace for Container Apps
@@ -84,8 +82,13 @@ resource "azurerm_container_app" "main" {
       }
 
       env {
-        name  = "REDIS_URL"
-        value = "rediss://:${azurerm_redis_cache.main.primary_access_key}@${azurerm_redis_cache.main.hostname}:${azurerm_redis_cache.main.ssl_port}"
+        name        = "TABLE_CONNECTION_STRING"
+        secret_name = "table-connection-string"
+      }
+
+      env {
+        name  = "TABLE_NAME"
+        value = azurerm_storage_table.links.name
       }
 
       env {
@@ -178,6 +181,11 @@ resource "azurerm_container_app" "main" {
         value = var.scoutnet_nickname_suffixes
       }
     }
+  }
+
+  secret {
+    name  = "table-connection-string"
+    value = azurerm_storage_account.main.primary_connection_string
   }
 
   secret {
