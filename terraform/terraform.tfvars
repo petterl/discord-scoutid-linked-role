@@ -4,8 +4,12 @@ location        = "swedencentral" # Sweden Central region
 subscription_id = "d4887907-2e73-4465-9fe3-44c82ed016d6"
 tenant_id       = "317a47ba-fd32-41b8-8ebe-310a1adc9863"
 
-# Scaling Configuration (min_replicas = 0 allows scale to zero for cost savings)
-min_replicas = 0
+# Scaling Configuration.
+# min_replicas MUST be >= 1: Discord requires interaction (slash command) ACKs
+# within 3 seconds, which a scaled-to-zero cold start cannot meet ("Applikationen
+# svarade inte"). Min-replica instances are billed at the reduced idle rate when
+# not processing requests, so keeping one warm is cheap.
+min_replicas = 1
 max_replicas = 2
 
 # Docker Image Configuration

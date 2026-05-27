@@ -44,7 +44,7 @@ variable "tags" {
 variable "min_replicas" {
   description = "Minimum number of container replicas"
   type        = number
-  default     = 0 # Scale to zero when not in use for cost savings
+  default     = 1 # Must be >= 1: Discord interaction ACKs need <3s; a cold start can't meet that
 }
 
 variable "max_replicas" {
