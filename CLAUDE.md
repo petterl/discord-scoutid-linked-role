@@ -2,20 +2,32 @@
 
 ## Build & Deploy
 
-```bash
-# Build from WSL (requires Sectra npm registry)
-docker build --no-cache -t acrwsj27prodsec.azurecr.io/discord-scoutid-linked-role:latest .
-docker push acrwsj27prodsec.azurecr.io/discord-scoutid-linked-role:latest
+**Always tag images with the git SHA, never just `latest`.** Azure Container
+Apps does not create a new revision when the image *string* is unchanged
+(`...:latest` → `...:latest`), so deploying over `latest` silently keeps the
+old image running. A unique tag forces a fresh revision every time.
 
-# Deploy to Azure
-az containerapp update --name app-discord-scoutid-prod-sec --resource-group rg-discord-scoutid-prod-sec --image acrwsj27prodsec.azurecr.io/discord-scoutid-linked-role:latest
+```bash
+TAG=$(git rev-parse --short HEAD)
+ACR=acrwsj27prodsec.azurecr.io/discord-scoutid-linked-role
+
+# Build from WSL (requires Sectra npm registry)
+docker build --no-cache -t $ACR:$TAG .
+docker push $ACR:$TAG
+
+# Deploy to Azure (unique tag → guaranteed new revision)
+az containerapp update --name app-discord-scoutid-prod-sec --resource-group rg-discord-scoutid-prod-sec --image $ACR:$TAG
 
 # View logs
 az containerapp logs show --name app-discord-scoutid-prod-sec --resource-group rg-discord-scoutid-prod-sec --follow
 
 # Register slash command (once)
-docker run --rm --env-file .env acrwsj27prodsec.azurecr.io/discord-scoutid-linked-role:latest node src/register.js
+docker run --rm --env-file .env $ACR:$TAG node src/register.js
 ```
+
+> If you must redeploy the same tag, add `--revision-suffix <unique>` to the
+> `az containerapp update` so a new revision is created. Terraform deploys
+> should set `docker_image_tag` to the git SHA for the same reason.
 
 ## Architecture
 
